@@ -504,3 +504,47 @@ freshly launched app in between, is a regression rather than the documented
 2/4 flakiness.
 
 Not the cause: no microSD card is inserted (checked with the operator).
+
+## 2026-10-28 later still: what the console will and will not accept as a controller
+
+All tests with the console awake at the home menu, video live, and `/usb` read on
+the device.
+
+### The official GameCube descriptor cannot be served
+
+| descriptor | length | `esp_hid_parse_report_map` | console |
+| --- | --- | --- | --- |
+| official WUP-028, byte-for-byte | 214 | **false** | interface never configured (`hidReady:false`) |
+| official with `09 00` -> `09 01` (usage 0 -> 1) | 214 | **false** | same |
+| official with a usage added to every nested collection | 232 | **false** | same |
+| rebuilt with vendor page, same report ids/lengths | 138 | true | mounts, but never configured or polled |
+| rebuilt with Generic Desktop/Gamepad | 89 | true | pad-only: never configured; merged with keyboard: polled |
+
+The core calls `esp_hid_parse_report_map` before it will answer
+`GET_DESCRIPTOR(report)`; when that fails it returns NULL and the host's request
+STALLs, so the interface is never set up. Espressif's parser rejects the official
+descriptor even after those edits, which means the one descriptor Nintendo's
+GameCube driver would recognise is the one we cannot present.
+
+### A device that parses still is not a controller
+
+Pad-only builds that parse (GameCube vendor rebuild, Pokken 90-byte) mount but are
+never configured - the console does not bind a generic gamepad.
+
+Merged keyboard + gamepad builds *are* polled (`hidReady:true`, reports climbing,
+one output report received), but that is the keyboard driver owning the interface:
+a full sweep of 13 button bits and 8 hat values, compared on a 1200x1000 crop with
+the clock excluded, changed nothing at all. Pressing A does not launch a title.
+
+So on this console, for this toolchain: **keyboard yes, controller no.**
+
+### Two operational facts worth keeping
+
+- The console sleeps roughly **65 s** after it stops receiving input: video is up
+  at t=20 s, and by t=70 s the capture is black and USB is gone.
+- The devboard is powered from the dock, so it loses WiFi whenever the console
+  sleeps or is off. Every "the board crashed" observation was this; there was
+  never a crash, which also means the send-timeout bug fix was chasing a ghost.
+- The Fingerbot's arm travel (`dp102`) matters: at 85 the arm does not reach the
+  button and every press is silently a no-op. Restored to 95, a 16 s hold
+  (`dp103=160`) powered the console fully off, and a 1 s press brought it back.
