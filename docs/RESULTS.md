@@ -321,3 +321,111 @@ never torn down. Comparing `--keep-open` against the default across boots is the
 experiment: if the second operation survives with `--keep-open`, the teardown is
 what kills the session, not the save open itself, and the fix belongs in our
 close/cleanup path rather than in the exploit.
+
+---
+
+# 2026-10-28: controller persona, and a console that cannot be woken
+
+Work in this section was done on the same retail console. It ends blocked on
+physical input, and the measurements that got there are recorded because each one
+rules something out.
+
+## Session attempt: stage 1 hung, and a dead session cannot be re-entered
+
+`run.cjs --rpc` created `runs/switch2-Lxus1B`. The console was already in
+SmileBASIC direct mode with the bootstrap loaded from an earlier boot, so the
+sequence started at `RUN`:
+
+| step | screen said | host log |
+| --- | --- | --- |
+| `RUN` | `DIST BOOT READY 1015`, then `OK` (no `RPC RUNNING` this time) | waiting |
+| `REMOVE NSR,&H60000000,&H3FFFFFFF` | `Out of memory (REMOVE)` - the required marker | waiting |
+| `V=START(39380,192,168,50,235,0,0,0,0)` | `BOOT OK 3925528160` / `HOST CONNECTED` / `RPC RUNNING` | `Connected. Checking the console...` then `1/4 Checking the console` |
+| 60 s later | `RPC RUNNING`, no prompt | `Error: Console response timed out; restart the application` |
+
+The console-side program stayed in its native call: a fresh host
+(`runs/switch2-uo2cLG`) never saw `HOST CONNECTED` in 45 s, and pressing Enter
+(which is `+`/STOP on a keyboard) did not break it. So a session that dies at
+stage 1 is not recoverable by another host - it needs the application restarted,
+which is the next section.
+
+## The controller work: what the core does, and what the console accepts
+
+All builds below are `arduino-cli` 1.5.1 with `esp32:esp32` 3.3.12 on the
+Flipper WiFi Devboard (`esp32s2`), flashed over OTA to `192.168.50.215:3232`.
+A `/usb` endpoint reports `mounted` (`ESPUSB::operator bool`), `hidReady`
+(`tud_hid_n_ready(0)`), how many reports were sent, and whether the host ever
+sent an output report.
+
+| build | descriptor | VID:PID | `mounted` | `hidReady` | outcome |
+| --- | --- | --- | --- | --- | --- |
+| keyboard only | 63 B keyboard | 303A (Espressif) | true | **true** | typing works (`/type` -> `typed 8`) |
+| keyboard only | 63 B keyboard | **057E:0337** | true | **true** | VID/PID alone is not what the console rejects |
+| keyboard + GC adapter | 63 + 214 B merged | 057E:0337 | true | false | configured, never polled (`reportsSent` stuck at 2) |
+| GC adapter only | 214 B (WUP-028 dump) | 057E:0337 | true | false | configured, never polled |
+| Pokken pad only | 89 B gamepad | 0F0D:0092 | - | - | **never tested awake** (console slept first) |
+
+Two things were ruled out along the way:
+
+- **It is not the HID parser.** The core returns NULL from
+  `tud_hid_descriptor_report_cb` if `esp_hid_parse_report_map` rejects the
+  descriptor, which stalls the interface. Calling that same parser from the
+  firmware (a `/parse` endpoint) shows the keyboard descriptor *and* a
+  vendor-defined rebuild of the WUP-028 descriptor parse (8-byte input and
+  8-byte output reports for the pad). So the descriptor was acceptable and
+  something else stopped the console from polling it.
+- **It is not `build_opt.h` syntax**, except that it must contain flags only:
+  a comment line in `build_opt.h` is split into bare words and the compile fails
+  with `cannot specify '-o' with '-c' ... with multiple files`.
+
+Then the console stopped enumerating the device altogether: after several OTA
+reboots (each a USB detach/attach) the *proven keyboard build* also reported
+`mounted:false`, so the console's USB host, not the firmware, was the wedged end.
+
+## Fingerbot: the documented `/hold` did not exist on the running server
+
+The server answering `192.168.50.235:8080` was started at 01:56, before
+`fingerbot/fingerbot.py` was last edited at 02:38. It exposes only
+`/press`, `/on`, `/off`, `/status` - `GET /hold?seconds=10` answers
+`{"ok": false, "error": "use /press /on /off /status"}`.
+
+That matters because `pulse()` is what sets the sustain DP. The running server's
+`/press` is `set(dp1=true)`, and `dp103` (press sustain, tenths of a second) was
+**1** - so "press, sleep 10, off" is a **0.1 s tap**, not a 10 s hold.
+
+Starting the current source on a second port works, provided the old server is
+stopped first: it holds the BLE connection, and a second scanner finds no
+advertisements (`Fingerbot not found`) until it is killed. With that done:
+
+```
+GET /hold?seconds=10 -> {"ok": true, "action": "hold?seconds=10", "ticks": 100, "restored": 1}
+```
+
+## The blocking measurement
+
+A genuine 100-tick hold should force a Switch off in hardware. It did not:
+
+| probe | result |
+| --- | --- |
+| `ping 192.168.50.91` immediately after the 10 s hold | replies, 5-8 ms |
+| OUI of `192.168.50.91` (`c8:91:43:0d:8c:2e`) | Nintendo - so the console is powered, not off |
+| capture during three taps and a 6 s hold | 84 frames, all 8609 bytes, byte-identical (no signal) |
+| capture pipeline itself (Mac screen, device `3:none`) | 1.28 MB frame - the card and camera permission are fine |
+
+A console in sleep keeps WiFi up with network standby and drops HDMI and dock
+USB, which is exactly what is observed. A 10 s power-button hold cannot be
+ignored by the hardware, so the Fingerbot is not reaching the button; every
+later probe of the USB personas was therefore taken against a host that was
+asleep, and is not evidence about the persona.
+
+## State left behind
+
+- Firmware: **keyboard only, Espressif VID** - the build proven to type
+  (`/pad` answers 404, which is how to tell it apart from the controller build).
+- Fingerbot: current source serving on **8080** again (it has `/tap` and
+  `/hold`), after stopping the stale process.
+- Console: asleep, answering ping, with no video and no dock USB; it needs a
+  physical power-button press before any session work can continue.
+- `tools/loop.cjs` is the supervisor for that sequence. Its power and launch
+  stages are written but **untested against a live console**; the bootstrap
+  stages are the hand-verified sequence above.
