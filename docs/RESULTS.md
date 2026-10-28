@@ -429,3 +429,78 @@ asleep, and is not evidence about the persona.
 - `tools/loop.cjs` is the supervisor for that sequence. Its power and launch
   stages are written but **untested against a live console**; the bootstrap
   stages are the hand-verified sequence above.
+
+## 2026-10-28 later: power control proven, stage 2 regressed
+
+The console was woken by hand and everything below was then measured against a
+live console at the home menu.
+
+### Fingerbot: both directions work, with the right timings
+
+The current `fingerbot.py` (`pulse()`) is what makes a hold possible:
+
+| command | what it does | observed |
+| --- | --- | --- |
+| `GET /hold?seconds=10` | sets dp103=100, presses, restores dp103 | console powers **off** |
+| `GET /hold?seconds=1` | sets dp103=10 | console powers **on** from off |
+| `GET /tap` | one 0.1 s press | too short to power on from off; it toggles sleep when already on |
+
+A 10 s hold followed by a 1 s press produced a clean boot to the home menu with
+no hands on the console, and the keyboard re-enumerated (`mounted:true`,
+`hidReady:true`). The earlier "the fingerbot is not reaching the button"
+conclusion was wrong: it was the 0.1 s tap that was too short, and a press while
+the console is already on puts it to sleep instead of powering it on.
+
+### The home menu does not accept a USB keyboard
+
+With the proven keyboard build mounted on a console sitting at the home menu,
+Left and Enter produced **three byte-identical frames** (632,955 bytes each). So
+the keyboard can type into SmileBASIC but cannot launch it; that is exactly the
+gap the controller work is meant to close.
+
+### The Pokken persona is accepted at the USB level, but not as input
+
+Merged keyboard + pad build, VID/PID `0F0D:0092`:
+
+```
+usb: {"mounted":true,"hidReady":true,"readyChecks":16034,
+      "reportsSent":161,"outReports":1,"lastOut":"00 01"}
+```
+
+The console configured the interface, polled it continuously, and sent one
+output report - the first time a controller persona got that far (the
+GameCube-adapter builds were configured but never polled). It is still not
+**input**: sweeping all 13 button bits and all 8 hat values left the screen
+byte-identical, so the driver is reading reports but not mapping them to a
+controller. One capture during the sweep was colour-corrupted (pink/green
+static) which is a capture artefact, not a UI change - worth knowing before
+reading a frame hash as evidence.
+
+### The board crashes in pad-streaming mode
+
+Twice, while streaming pad reports, the ESP32 dropped off WiFi entirely (no
+ping, no HTTP, no mDNS) and needed a power cycle. The keyboard-only build had
+run for hours. The first fix (gating sends on `tud_hid_n_ready` and a 3 ms
+timeout instead of the 100 ms default) was in place for the second crash, so
+that was not sufficient and the cause is still open.
+
+### Stage 2/4 has regressed since 23:02
+
+Every attempt after 22:53 has died in `2/4 Acquiring FS memory`:
+
+| time | error |
+| --- | --- |
+| 22:53 | **success - 4/4** |
+| 23:02 | `Console disconnected` |
+| 03:14 | `Native batch did not terminate; resources retained` |
+| 09:03 | `Unexpected manager allocation size: 12288` (expected 59 x 208 = 12272) |
+| 09:24 | `Switch 2 application connection is not ready` |
+
+The 09:03 attempt is the informative one: a deterministic accounting check, not
+a timeout. And it is not a system update - `sdkCrc32` is `3925528160` in both the
+22:53 success and the 09:24 failure, so the game binary is the same. Seven
+successes before 23:02 and five failures after it, with a clean power cycle and a
+freshly launched app in between, is a regression rather than the documented
+2/4 flakiness.
+
+Not the cause: no microSD card is inserted (checked with the operator).
