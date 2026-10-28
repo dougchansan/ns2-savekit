@@ -84,7 +84,7 @@ static const u8 spi80[] = {
 #define PRO_ID 0x03
 #define REPORT_SIZE 63
 
-static volatile uint32_t proSent = 0, proOut = 0;
+static volatile uint32_t proSent = 0, proOut = 0, descRequests = 0;
 static volatile u8 lastOut[16] = {0};
 static volatile u8 lastOutLen = 0;
 
@@ -95,6 +95,7 @@ class ProController : public USBHIDDevice {
   ProController() { hid.addDevice(this, sizeof(pro_report_desc)); }
   void begin() { hid.begin(); }
   uint16_t _onGetDescriptor(u8 *dst) override {
+    descRequests++;
     memcpy(dst, pro_report_desc, sizeof(pro_report_desc));
     return sizeof(pro_report_desc);
   }
@@ -333,6 +334,8 @@ void setup() {
   rebuildInput();
   USB.manufacturerName("Nintendo Co., Ltd.");
   USB.productName("Pro Controller");
+  USB.firmwareVersion(0x0210);   // bcdDevice: a real Pro Controller reports 2.10
+  USB.usbVersion(0x0200);        // bcdUSB 2.0
   USB.begin();
   pro.begin();
   WiFi.begin(SSID, PASS);
@@ -355,6 +358,7 @@ void setup() {
       ",\"handshake\":" + (hidReady ? "true" : "false") +
       ",\"reportsSent\":" + (uint32_t)proSent +
       ",\"outReports\":" + (uint32_t)proOut +
+      ",\"descRequests\":" + (uint32_t)descRequests +
       ",\"uptimeMs\":" + (uint32_t)millis() + ",\"lastOut\":\"";
     for (u8 i = 0; i <= lastOutLen; i++) {
       if (i) body += ' ';

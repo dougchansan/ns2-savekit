@@ -578,3 +578,27 @@ about **55 s** after it stops receiving input (keys do not count - measured over
 three minutes), and the devboard is powered from the dock, so it drops off WiFi
 with the console. Every flash (~35 s) and every attach must fit inside that
 window, and most of tonight's attempts lost the race mid-flash.
+
+### Pro Controller persona: where it stops
+
+Refinements and the exact symptom:
+
+| probe | result |
+| --- | --- |
+| `descRequests` after attach | **1** - the console does fetch our 209-byte report descriptor |
+| interface configured (`hidReady`) | false, every attach since the first flash (one earlier read of `true`, unexplained) |
+| host init traffic (`outReports`) | 0 - the `0x80` handshake never starts |
+| home menu controller indicator | shows only the built-in Joy-Con; our device is not adopted |
+| identity refinements tried | `bcdDevice` 0x0210 (a real pad reports 2.10), `bcdUSB` 0x0200, product/manufacturer strings |
+| report sizes checked by parsing the descriptor | 0x21/0x30/0x81 all 63 bytes, i.e. 64 on the wire - they fit the endpoint |
+
+So the console gets as far as asking for the report descriptor and then declines
+the device, with no handshake traffic at all. The next things to compare are the
+parts we have not matched byte-for-byte: the complete configuration/interface
+descriptor (bInterval, endpoint order, `iInterface`), and a real controller's
+descriptor length (203 vs our 209) - espp claims a byte-for-byte match, but that
+claim is worth verifying against a dump before trusting it.
+
+Two useful side effects of this work: the console **stays awake while our USB
+device is attached** (it slept every ~55 s before), and the devboard is
+battery-powered, so it no longer drops off WiFi with the console.
