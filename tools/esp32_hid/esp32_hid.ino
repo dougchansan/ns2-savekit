@@ -14,8 +14,9 @@
 #include <USB.h>
 #include <USBHIDKeyboard.h>
 
-static const char *SSID = "YOUR_SSID";
-static const char *PASS = "YOUR_PASSWORD";
+#include "wifi_secret.h"   // WIFI_SSID / WIFI_PASS - see wifi_secret.h
+static const char *SSID = WIFI_SSID;
+static const char *PASS = WIFI_PASS;
 
 WebServer server(80);
 USBHIDKeyboard keyboard;

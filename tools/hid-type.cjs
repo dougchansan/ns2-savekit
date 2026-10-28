@@ -6,7 +6,7 @@
 //   node hid-type.cjs http://192.168.50.x --status
 //
 // Same role as switch-type.cjs, but the device is a WiFi Devboard running
-// tools/esp32-hid/esp32_hid.ino: USB HID to the console, HTTP back to here. No
+// tools/esp32_hid/esp32_hid.ino: USB HID to the console, HTTP back to here. No
 // kernel extension, no SIP change and no KDK, because macOS is not in the path.
 const http = require('node:http');
 const fs = require('node:fs');
