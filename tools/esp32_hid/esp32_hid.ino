@@ -83,7 +83,11 @@ class PokkenPad : public USBHIDDevice {
     for (uint8_t i = 0; i < padLastOutLen; i++) padLastOut[i + 1] = buffer[i];
   }
   bool send(const uint8_t *payload, size_t len) {
-    bool ok = hid.SendReport(0, payload, len);   // no report ID, like the real pad
+    // A short timeout matters: the default 100 ms blocks the main loop when the
+    // host stops polling, which starves the HTTP server and makes an OTA update
+    // time out mid-transfer. 3 ms is longer than a 1 ms frame at 125 Hz, so a
+    // healthy host never sees a dropped report.
+    bool ok = hid.SendReport(0, payload, len, 3);   // no report ID, like the real pad
     if (ok) padReportsSent++;
     return ok;
   }
@@ -101,6 +105,7 @@ PokkenPad pad;
 
 static uint8_t padReport[PAD_LEN];
 static uint32_t padSentAt = 0;
+static uint8_t padLastSent[PAD_LEN];
 static uint32_t padReleaseAt = 0;
 
 struct Key { uint8_t usage; bool shift; };
@@ -168,11 +173,14 @@ static void streamPad() {
     padIdle();
     padReleaseAt = 0;
   }
-  if (now - padSentAt < 8) return;   // 125 Hz, the pad's report rate
-  // Never queue a report the host is not reading: an unanswered transfer leaves
-  // the endpoint busy and every later send fail, which looks like a dead device.
+  // Only send when the host has finished with the previous report. Queuing into
+  // a host that is not reading leaves the endpoint busy forever, which looks
+  // exactly like a dead device from the console's side.
   if (!tud_hid_n_ready(0)) return;
   padReadyChecks++;
+  const bool changed = memcmp(padReport, padLastSent, sizeof(padReport)) != 0;
+  if (!changed && now - padSentAt < 100) return;   // keepalive at 10 Hz when idle
+  memcpy(padLastSent, padReport, sizeof(padReport));
   padSentAt = now;
   pad.send(padReport, sizeof(padReport));
 #endif
