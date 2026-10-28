@@ -548,3 +548,33 @@ So on this console, for this toolchain: **keyboard yes, controller no.**
 - The Fingerbot's arm travel (`dp102`) matters: at 85 the arm does not reach the
   button and every press is silently a no-op. Restored to 95, a 16 s hold
   (`dp103=160`) powered the console fully off, and a 1 s press brought it back.
+
+## 2026-10-28: Switch Pro Controller persona (in progress)
+
+`tools/esp32_pro` presents a Nintendo Switch Pro Controller (`057E:2009`,
+"Pro Controller") with the official 209-byte report descriptor, taken from
+espp's `hid-rp` (which matches a real controller dump) and printed from a host
+build of those constexpr templates. The protocol is ported from espp
+`switch_pro`: 0x81 device-info announce on attach (retried until the host
+answers), 0x80 init commands (device info / handshake echo / baud rate /
+enable-USB-HID), 0x01 subcommands answered with 0x21 replies (`0x02` device
+info, `0x03` report mode, `0x10` SPI read with the factory/user calibration
+blobs, `0x30` player lights, `0x40` IMU, `0x48` vibration, NFC/IR stubs), and
+0x30 input reports at 125 Hz once the host enables USB HID.
+
+Measured so far:
+
+| observation | result |
+| --- | --- |
+| device enumerates as `057E:2009` | `mounted:true` |
+| HID interface configured by the console | **`hidReady:true` once**, at 10:39 |
+| host init traffic (`outReports`) | 0 - the 0x80/0x01 handshake has not started yet |
+| later attaches (flash, `/reboot`, power cycle) | `mounted:true`, `hidReady:false` |
+
+So the identity and descriptor are accepted by the console at least once, which
+no other persona achieved; the handshake itself has not been observed. What is
+blocking iteration is now the environment, not the protocol: the console sleeps
+about **55 s** after it stops receiving input (keys do not count - measured over
+three minutes), and the devboard is powered from the dock, so it drops off WiFi
+with the console. Every flash (~35 s) and every attach must fit inside that
+window, and most of tonight's attempts lost the race mid-flash.
