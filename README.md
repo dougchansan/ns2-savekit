@@ -245,6 +245,36 @@ Nothing about anyone else's console is in this repository:
   remembered per title, so it asks once per title at most. `4` probes each account
   read-only and pulls only the ones that actually have a save.
 
+### Console input over WiFi (no kernel extension)
+
+The Mac cannot present a USB keyboard without an unsigned kernel extension, and on
+some macOS builds no matching KDK exists, so input runs on an ESP32-S2 instead: the
+Flipper WiFi Devboard flashed with `tools/esp32_hid/` is a USB keyboard for the
+console and an HTTP endpoint for us at the same time.
+
+```sh
+node tools/hid-type.cjs http://<devboard-ip> --status
+node tools/hid-type.cjs http://<devboard-ip> 'PRINT 1'
+node tools/hid-type.cjs http://<devboard-ip> --stdin < bootstrap.txt
+```
+
+Flashing, when the board is in BOOT+RST download mode:
+
+```sh
+cd tools/esp32_hid
+arduino-cli compile --fqbn esp32:esp32:esp32s2 --export-binaries esp32_hid.ino
+arduino-cli upload  --fqbn esp32:esp32:esp32s2 -p /dev/cu.usbmodem* esp32_hid.ino
+```
+
+The board prints nothing to the Mac; find it by scanning for its endpoint:
+
+```sh
+seq 1 254 | xargs -P 64 -I{} sh -c 'curl -s -m 1 http://192.168.50.{}/status \
+  2>/dev/null | grep -q "\"ok\":true" && echo 192.168.50.{}'
+```
+
+SmileBASIC inverts letter case on USB keyboards; the firmware applies that rule, so
+text goes through `/type` rather than raw HID codes.
 ## Worked example: Seedsow Lullaby demo, pull then install
 
 One session, one save operation, uid typed once (nicknames are not decoded yet, so
