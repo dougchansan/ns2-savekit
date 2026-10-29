@@ -88,12 +88,17 @@ def export_model(model_path, out_root, tex_source=None, tex_cache=None):
                   stride * shape['vertex']['count']].reshape(shape['vertex']['count'], stride)))
             shapes_out.append(('s%d' % si, pos, meshes))
 
+        bones = bfres10.skeleton(b, model['model'])
+        if bones:
+            with open(os.path.join(out_dir, name + '.skeleton.json'), 'w') as f:
+                json.dump({'model': name, 'bones': bones}, f, indent=1)
         refs = bfres10.texture_references(b)
         decoded = [ref for ref in refs if export_texture(tex_source, ref, tex_cache)]
         mtl = os.path.join(out_dir, name + '.mtl')
         bfres10.write_mtl(mtl, decoded, os.path.join('..', 'tex'))
         bfres10.write_obj(obj, shapes_out, name, os.path.basename(mtl))
-        record.update({'shapes': len(model['shapes']),
+        record.update({'bones': len(bones),
+                       'shapes': len(model['shapes']),
                        'groups': sum(len(m) for _, _, m in shapes_out),
                        'vertices': sum(len(p) for _, p, _ in shapes_out),
                        'indices': sum(len(m) for _, _, ms in shapes_out for m in ms),

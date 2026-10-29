@@ -144,6 +144,37 @@ def shape_geometry(b, shape, shared_offset=None):
     return pos, meshes
 
 
+def skeleton(b, model=None):
+    """FSKL as a bone list: name, parent index, and local transform.
+
+    Bone headers are 0x58 bytes from the array pointer at FSKL+0x10: name pointer
+    at +0x00, parent (s16, -1 for the root) at +0x22, scale at +0x30, rotation at
+    +0x3c and translation at +0x4c. The rotation reads as Euler radians (a bone with
+    1.57 on X is a quarter turn); it is exported as stored.
+    """
+    model = model or ptr(b, 0x28)
+    fskl = u64(b, model + 0x18)
+    if not fskl or bytes(b[fskl:fskl + 4]) != b'FSKL':
+        return []
+    array = u64(b, fskl + 0x10)
+    count = u16(b, fskl + 0x38)
+    bones = []
+    for i in range(count):
+        off = array + i * 0x58
+        name_ptr = u32(b, off)
+        name = ''
+        if 0 < name_ptr < len(b):
+            length = u16(b, name_ptr)
+            if 0 < length < 64:
+                name = b[name_ptr + 2:name_ptr + 2 + length].tobytes().decode('ascii', 'replace')
+        bones.append({'index': i, 'name': name,
+                      'parent': struct.unpack_from('<h', b, off + 0x22)[0],
+                      'scale': [round(v, 6) for v in struct.unpack_from('<3f', b, off + 0x30)],
+                      'rotation': [round(v, 6) for v in struct.unpack_from('<3f', b, off + 0x3c)],
+                      'translation': [round(v, 6) for v in struct.unpack_from('<3f', b, off + 0x4c)]})
+    return bones
+
+
 def texture_references(b):
     """Pascal strings in the model that name a texture in the Tex directory."""
     refs = set()
