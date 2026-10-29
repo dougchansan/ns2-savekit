@@ -144,3 +144,21 @@ are a separate problem: they are `Ounce64` containers the toolkit cannot read.
 
 Ring (`CmnObj_AccelRing000`): 2 shapes, 4,503 vertices, 10,272 indices, 5 groups.
 Sign (`CmnObj_AerialSign009`): 1 shape, 3,624 vertices, 8,100 indices, 3 groups.
+
+## Full model export (2026-10-29)
+
+`tools/mkw_export.py --all <Model-dir> <out-dir>` walks every `*.bfres.zs`, writes
+`<model>/<model>.obj` + `.mtl`, and decodes referenced textures into a shared
+`tex/` cache (symlinking an existing texture export avoids duplicating it).
+
+    ~/mkw-models   4,803 models   4.1 GB   (4,803 .obj + 4,803 .mtl)
+    ~/mkw-tex     53,618 PNGs    23.6 GB
+
+Of the 5,827 files in `Model/`: **4,803 exported, 1,024 animation-only files
+skipped (`.anim.bfres`, no FMDL), 0 failed.** Runtime ~100 s with 8 workers.
+
+Robustness added along the way: vertex buffers that cannot hold a float3 (a
+terrain file has stride 8) or are truncated now yield an empty shape rather than
+raising, so those models still export their textures; per-shape position offsets
+are validated and fall back to a shared offset only when implausible; the outlier
+clamp scales to each model's median size.
