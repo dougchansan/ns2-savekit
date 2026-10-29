@@ -168,3 +168,31 @@ this machine: **~145 textures/s with 8 workers**, so the 140k-texture `Tex/` tre
 is a ~16 minute job rather than an overnight one. A 3,000-texture first pass gave
 2,898 ok / 102 failed, and the 102 were a single bug (BC1/BC4 already return RGBA,
 an extra channel made PIL reject the array) — fixed.
+
+## Full export (2026-10-29)
+
+The whole texture tree is decoded:
+
+    ~/mkw-tex     53,618 PNGs   23.6 GB   mean 439 KB
+    ~/mkw-full/base/romfs/Tex   53,613 .bntx.zs   -> 53,618 outputs (5 dirs of extras)
+
+100% of the tree (0 failures) at ~140 textures/s with 8 workers, roughly 17 minutes
+end to end. Format mix seen: ASTC 8×8 sRGB/Unorm for albedo and normal maps, ASTC
+5×5/6×6 for some driver and character normals, BC6H UF16 for the light bakes, R16
+for shadow maps, R8 for occlusion/decals, R16G16 for motion-vector lookups, and a
+handful of float RGBA probes.
+
+Known gaps: cubemaps and array textures (`BRTI+0x30` layers > 1, e.g.
+`World_Game03_Probe`) decode only their first layer; mips are exported on request
+with `--mips` rather than always.
+
+## Models with textures
+
+`tools/mkw_export.py <model.bfres.zs> <out-dir>` ties it together: geometry, a
+material, and every referenced texture.
+
+    Driver_MarioRacing_Sub0: 7 shapes, 26 groups, 12700 vertices, 51015 indices,
+                             27/27 textures decoded
+
+Ring and character both export with sane bounds; positions are written once per
+shape with one `g` block of faces per mesh.
