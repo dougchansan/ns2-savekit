@@ -10,10 +10,10 @@ count and where its data lives. The FSKA header is 0x50 bytes:
   +0x08  name (NW string pointer)
   +0x20  offset of this animation's bone-anim header array
   +0x28  offset of its secondary array (bone-anim header array + 0x70)
-  +0x40  bone-animation count        (e.g. 30, or 90 for a longer clip)
+  +0x40  frame count                 (30 for a 1-second clip at 30 fps)
   +0x44  curve count
-  +0x48  offset of the curve/default-result data
-  +0x4C  frame count                 (e.g. 55)
+  +0x48  baked size
+  +0x4C  bone-animation count        (e.g. 55; clips target shared-rig names)
 
 The animation data begins with a table of -1 entries, then per-bone default results
 as floats (a bone's rest scale/rotation/translation), then the anim curve headers
@@ -63,9 +63,9 @@ def animations(b):
         out.append({'index': i,
                     'name': nw_string(b, u32(b, header + 0x08)),
                     'size': u32(b, header + 0x04),
-                    'bone_anims': u32(b, header + 0x40),
+                    'frame_count': u32(b, header + 0x40),
                     'curves': u32(b, header + 0x44),
-                    'frame_count': u32(b, header + 0x4c),
+                    'bone_anims': u32(b, header + 0x4c),
                     'bone_data': u64(b, header + 0x20),
                     'curve_data': u32(b, header + 0x48)})
     return out
