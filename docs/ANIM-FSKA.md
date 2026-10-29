@@ -146,3 +146,36 @@ Cheap and decisive, in order:
 
 4,803 models have skeletons (385 rigged with more than 10 bones, max 77). 1,024
 `.anim.bfres` files are indexed but not sampled.
+
+## Conclusion after the second pass
+
+The curve headers, targets, key counts, frame arrays, bone names and clip metadata
+are all decoded and stable. What is not decoded is how a key becomes a value, and
+every measurement points the same way: **the keys are not the values**.
+
+* Implied scales from `Delta / key-range` are 3.0e-6 for a translation curve and
+  3.1e-3 for a rotation curve — two orders of magnitude apart, so there is no
+  shared fixed-point convention.
+* The `Scale` field reads 0.0 on all 105 curves of the sampled clip.
+* `FSKA+0x48`, which the reference calls the baked size, is 15,960 bytes for a clip
+  whose variable data spans about 13.5 KB.
+
+Taken together, the most consistent reading is that these clips are **baked**: the
+key arrays are indices into a per-frame value table, and `Delta` is the range of
+that table's values. Sampling therefore needs two things this repository does not
+have yet:
+
+1. the location and layout of the baked value table (the clip's data region is the
+   place to look, and the clip's `+0x48` size should bound it), and
+2. confirmation of how `bone animation +0x10 (base values)` relates to it — those
+   base floats were the only per-bone transforms found in the clip so far.
+
+The reliable way to get both is a reference that already samples g3d2 animations
+(Switch Toolbox and NintenTools are Switch 1 only, and I could not find a Switch 2
+fork), or a capture from the running game (the same approach that resolved the
+texture swizzle via Eden-NS2). Guessing further from byte patterns risks producing
+plausible-but-wrong poses, which is worse than an honest gap.
+
+Everything else about animations is in place and tested: clip index
+(`bfres10_anim.py`), bone hierarchy (`skeleton()` in `bfres10.py`), bind-by-name
+tables, targets, frame ranges and wrap flags.
