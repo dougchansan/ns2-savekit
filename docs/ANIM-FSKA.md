@@ -292,3 +292,30 @@ A capture would settle this immediately, but the two kinds are very different:
 That leaves a reference implementation (the wiki's own Tools section says "(none)"
 for BFRES) or a memory primitive we do not have. A frame would only be useful later,
 as a visual check on a renderer once skinning and animation exist.
+
+## Attempting the in-game evaluator (2026-10-29, sixth pass)
+
+Idea: the game itself evaluates these curves, so disassembling its g3d2 code would
+settle the mapping. Reconnaissance on `updates/917504/exefs/main` (33.7 MB NSO,
+45 MB of text, stripped — only 83 defined symbols):
+
+| anchor | result |
+| --- | --- |
+| `nn::g3d` strings | two log tags only (`nn::g3d`, `nn::g3d(update)`) |
+| `nn::g3d2` symbols in `main` | none |
+| `nn::g3d2` symbols in `sdk`/`subsdk*` | none (one unrelated `nnText_g3dviewer`) |
+| literal `FSKA` bytes anywhere in the image | **none** |
+| `movz #0x5346` / `#0x4D46` / `#0x5246` (magic halves) in text | none (hits are misaligned rodata) |
+| animation-related rodata strings | game-level parameters (`IsNeedWaitAnim`, `mPipeAnimFrameRatio`, …), not g3d2 internals |
+
+So the loader never compares the magic constants as immediates or literals — it
+almost certainly indexes sections by the header counts and offsets, which is why the
+file format is so layout-sensitive. Without a magic compare, a symbol, a log string
+or RTTI to anchor on, locating the curve evaluator inside 45 MB of stripped text is
+a full reverse-engineering project rather than a lookup.
+
+One data hint worth keeping for that effort: for several translation channels the
+curve's `delta` equals the bone's base translation (`Arm_1_L` x: 0.1452 vs 0.1456;
+`Clavicle_L` y: 0.1914 vs 0.191), while rotation `delta` is consistently smaller
+than the base rotation (1.233 vs 1.9414). That asymmetry is the most specific clue
+found so far about how `delta` is meant to be used.
