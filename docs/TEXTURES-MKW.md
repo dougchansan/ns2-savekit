@@ -122,3 +122,35 @@ geometry for this GPU generation. The next thing to try is a bit-exact
 implementation of the *Switch 2* unswizzle from a project that runs retail Switch 2
 software (eden ships `block_linear_unswizzle_2d.comp`) rather than the Switch 1
 formula, plus a known-content texture to fit against.
+
+## SOLVED: textures decode (2026-10-29)
+
+The missing piece was in [ShadyHero/Eden-NS2](https://github.com/ShadyHero/Eden-NS2)'s
+`NS2.patch`, which adds a `native_tiling` uniform to
+`block_linear_unswizzle_2d.comp`. Switch 2's GOB swizzle is the Switch 1 one with
+one extra bit flip:
+
+```glsl
+uint offset = SwizzleTable(pos.y * 64 + pos.x);   // 8-word table, 16-byte slots
+if (native_tiling) {
+    uint difference = ((offset >> 5) ^ (offset >> 6)) & 1;
+    offset ^= (difference << 5) | (difference << 6);
+}
+```
+
+Without the flip the image is correct in large regions but has an 8-pixel mosaic;
+with it, the texture is exact. `tools/bntx_decode.py` implements the whole chain:
+
+```
+CmnTex_Stage_SFCMarioCircuit_MarioBody_Alb  813x813 mips 10  ASTC_8x8/SRGB   -> 813x813 PNG
+Shadow_Game03_X031_Z123_Shadow              512x512 mips 10  R16/Unorm       -> 512x512 PNG
+CmnObj_AerialSignCentral001_Body03_Nrm     2048x2048 mips 12 ASTC_8x8/Unorm  -> 2048x2048 PNG
+```
+
+![Mario body albedo decoded from the MKW dump](docs/images/mkw-mario-albedo.png)
+
+Pipeline per texture: parse the `Ounc` container and `BRTI` (name, dimensions,
+mips, format, size), take the mip offset from the `BRTI+0x2A0` pointer array,
+deswizzle GOBs with the native-tiling swizzle, then decode with
+`texture2ddecoder` (ASTC 8x8, BC6H, BC1/3/4/5/7, R16). Mip 0 by default,
+`--mip N` for the rest.
