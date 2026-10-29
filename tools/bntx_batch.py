@@ -110,11 +110,33 @@ def main():
     print('finished: %d ok, %d failed in %.0fs (%.1f/s)' % (done, failed, elapsed,
                                                             (done + failed) / max(elapsed, 1e-6)))
     if manifest_path:
+        # Merge with any previous manifest so resumed runs keep a cumulative record
+        # instead of replacing it with just the files this run touched.
+        merged = {}
+        if os.path.exists(manifest_path):
+            try:
+                for entry in json.load(open(manifest_path)).get('textures', []):
+                    merged[entry['source']] = entry
+            except Exception:
+                pass
+        for entry in records:
+            prev = merged.get(entry['source'])
+            # A resume pass sees the same file as 'skipped'; keep the earlier record
+            # that actually decoded it so the manifest stays informative.
+            if prev and prev.get('ok') and not entry.get('ok'):
+                continue
+            merged[entry['source']] = entry
+        all_entries = list(merged.values())
         with open(manifest_path, 'w') as f:
-            json.dump({'source': source, 'output': output, 'jobs': jobs,
-                       'files': len(files), 'ok': done, 'failed': failed,
-                       'elapsed_s': round(elapsed, 1), 'textures': records}, f, indent=1)
-        print('manifest ->', manifest_path)
+            json.dump({'source': source, 'output': output,
+                       'textures': all_entries,
+                       'ok': sum(1 for e in all_entries if e.get('ok')),
+                       'failed': sum(1 for e in all_entries
+                                     if not e.get('ok') and not e.get('skipped')),
+                       'skipped': sum(1 for e in all_entries if e.get('skipped')),
+                       'last_run': {'files': len(files), 'ok': done, 'failed': failed,
+                                    'elapsed_s': round(elapsed, 1), 'jobs': jobs}}, f, indent=1)
+        print('manifest -> %s (%d entries)' % (manifest_path, len(all_entries)))
 
 
 if __name__ == '__main__':
