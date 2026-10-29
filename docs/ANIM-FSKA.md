@@ -179,3 +179,52 @@ plausible-but-wrong poses, which is worse than an honest gap.
 Everything else about animations is in place and tested: clip index
 (`bfres10_anim.py`), bone hierarchy (`skeleton()` in `bfres10.py`), bind-by-name
 tables, targets, frame ranges and wrap flags.
+
+## Third pass: the authoritative spec, and where it still diverges
+
+[Wexos's Wiki BFRES/Switch](https://wiki.wexosmk.xyz/index.php?title=BFRES_(File_Format)/Switch)
+documents the **version ≥ 9.0.0** layout, which is what MKW uses, and it is more
+detailed than either earlier source. The relevant parts:
+
+**Animation curve flag** (`xxAA xxBB xCCC DDEE`, u16 at +0x10): AA = post wrap,
+BB = pre wrap (0 clamp, 1 repeat, 2 mirror, 3 relative repeat), CCC = curve type
+(0 cubic float, 1 linear float, 2 baked float, 4 step int, 5 baked int, 6 step bool,
+7 baked bool), DD = frame format (0 float, 1 int16, 2 sbyte), EE = key format
+(0 float, 1 **16-bit fixed point: 1 sign + 10 exponent + 5 fraction**, 2 byte).
+Curve fields: +0x20 = scale (multiply), +0x24 = add (applied after multiplying,
+"not used by all curves"), +0x28 = delta, +0x2C = padding.
+
+**FSKA** (≥9): +0x04 flag — rotation mode (quaternion/Euler), scale mode, loop,
+**baked**; +0x20 bind index array; +0x28 bone animations; +0x40 frames; +0x44
+curves; +0x48 baked size; +0x4C bone animations; +0x4E user datas.
+
+**Bone animation** (0x38): +0x00 name, +0x08 curve array, +0x10 base values,
++0x28 flag (transformation types, a **10-bit channel mask**: 0x001 scale X … 0x200
+translate Z, and bits for whether the base value carries T/R/S), +0x2C begin
+rotate (3), +0x2D begin translate (6), +0x2E curve count, +0x2F begin base
+translate (7), **+0x30 begin curve — the index of this bone's first curve**.
+
+### What that fixed, and what it broke
+
+The `begin curve` index was the missing link: a bone's curves are
+`bone.curves + (begin + i) * 0x30`, not `bone.curves + i * 0x30`. With it,
+`Skl_Root` resolves to exactly three rotation curves (targets 0x20/0x24/0x28,
+deltas 0.2405 / 0.2319 / −0.0035) and `Arm_1_L`'s first three to translation
+x/y/z (0x10/0x14/0x18, deltas 0.1452 / 0.1914 / −0.0465). That is a clean,
+sensible mapping where the old one was noise.
+
+It does not yet hold end to end: `Arm_1_L` declares 6 curves but only its first 3
+parse, and `Arm_2_L` (begin 9, count 1) lands on garbage at
+`0x2000 + 9*0x30`. So either `begin` is relative to a single animation-wide curve
+array rather than to each bone's `+0x08` pointer, or the curve array is packed
+(with the 0x2C padding dropped) and the stride is not 0x30 in every case.
+
+Also worth noting: **FSKA +0x04 reads 0x1100 for `MBikeBackL`, i.e. the baked flag
+is set**, while every parsed curve's type bits read 0 (cubic float). The two
+descriptions disagree, and `+0x48` (baked size, 15,960 B) says a large baked payload
+exists somewhere. Resolving `begin curve` against the animation-wide array, and
+then reading the curve type from the flags rather than assuming, is the next step.
+
+The spec itself is no longer the gap: the flag layout, field semantics and curve
+interpolation formulas (step, linear, hermite) are all documented on that page,
+including the fixed-point key format.
