@@ -154,3 +154,17 @@ mips, format, size), take the mip offset from the `BRTI+0x2A0` pointer array,
 deswizzle GOBs with the native-tiling swizzle, then decode with
 `texture2ddecoder` (ASTC 8x8, BC6H, BC1/3/4/5/7, R16). Mip 0 by default,
 `--mip N` for the rest.
+
+## Batch export (2026-10-29)
+
+    python3 tools/bntx_batch.py ~/mkw-full/base/romfs/Tex ~/mkw-tex \
+        --jobs 8 --manifest ~/mkw-tex-manifest.json
+
+Walks every `*.bntx.zs`, decompresses with `zstd`, decodes mip 0 (or every mip
+with `--mips`) and writes the PNG under the same relative path. Existing outputs
+are skipped, so an interrupted run resumes; the JSON manifest records each
+texture's name, dimensions, mips, format and any error. Throughput measured on
+this machine: **~145 textures/s with 8 workers**, so the 140k-texture `Tex/` tree
+is a ~16 minute job rather than an overnight one. A 3,000-texture first pass gave
+2,898 ok / 102 failed, and the 102 were a single bug (BC1/BC4 already return RGBA,
+an extra channel made PIL reject the array) — fixed.

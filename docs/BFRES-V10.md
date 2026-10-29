@@ -124,3 +124,23 @@ models:
 Remaining for full glTF: normals/UVs (packed, need the `nn::gfx::AttributeFormat`
 mapping), materials (`FMAT`), skeleton, and multiple meshes per shape. Textures
 are a separate problem: they are `Ounce64` containers the toolkit cannot read.
+
+## Multi-shape export and materials (2026-10-29)
+
+`tools/bfres10.py` now walks the whole model, not just the first shape:
+
+* shapes are 0x60-byte `FSHP` blocks from `FMDL+0x28`; each has its own `FVTX`
+  and its own mesh array, so each shape gets its own position buffer;
+* every mesh in a shape's array becomes an OBJ group (`s<i>_m<j>`); meshes whose
+  indices fall outside that shape's vertex buffer are skipped rather than emitted
+  as broken faces;
+* the position offset is scored on inliers only (models are tens of units, so
+  anything past 1e3 is a sentinel vertex or a misaligned read) and reused across
+  shapes that share a stride — a small shape with a sentinel vertex would
+  otherwise mis-detect and produce garbage bounds;
+* texture references are read from the model's string table (pascal strings that
+  match the `Tex/` names exactly) and written to a `.mtl` with
+  `map_Kd`/`map_Ks`/`map_Ke`/`map_Bump`, which the `.obj` references via `mtllib`.
+
+Ring (`CmnObj_AccelRing000`): 2 shapes, 4,503 vertices, 10,272 indices, 5 groups.
+Sign (`CmnObj_AerialSign009`): 1 shape, 3,624 vertices, 8,100 indices, 3 groups.
