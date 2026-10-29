@@ -602,3 +602,50 @@ claim is worth verifying against a dump before trusting it.
 Two useful side effects of this work: the console **stays awake while our USB
 device is attached** (it slept every ~55 s before), and the devboard is
 battery-powered, so it no longer drops off WiFi with the console.
+
+## 2026-10-28 15:30-16:10: the pad-driven loop, and where stage 2 now fails
+
+The other agent's work was verified end to end with the pad, not by hand:
+
+- **The Pro Controller is adopted.** `/usb` shows `handshake:true`, `pairStep:4`
+  and the console's init sequence (`80:05 80:01 80:02 1:03 80:04 1:48 1:02 1:08
+  1:10 ... 1:40 1:30`). With the pad I navigated the home menu, picked the
+  **retail** SmileBASIC 4 tile (the white tile with no DEMO banner), selected the
+  `doug` account, dismissed the tag/info dialogs and took "Make a Program" into
+  direct mode: `SMILEBASIC for Nintendo Switch ver 4.4.9 ... OK`.
+- **Typing via the Flipper bridge works.** `flipper2jb` could not start Bad KB
+  while it was already open (`RPC status 17`), but sending the three input events
+  from its own start path (`request(23, integer(1,4)+integer(2,typ))` for
+  typ 0,2,1) ran the session script. The console printed `BOOT OK 3925528160 /
+  HOST CONNECTED / RPC RUNNING`, and `rpc.cjs <run> status` reported
+  `ready: true`, 896 calls.
+
+### Stage 2 after the harness fix
+
+The pin-accounting retry works: the reserved-gap record that used to fail with
+`Unexpected manager allocation size: 12288` now reports `allocated: 12272` (the
+expected 59 x 208) across 23 reservation checks. Three attempts inside the run
+then died later, each differently:
+
+| attempt | error |
+| --- | --- |
+| 1 | `Overwrite missed the qualified canary; retain resources for recovery` |
+| 2 | `Native batch did not terminate; resources retained` |
+| 3 | `Console response timed out; restart the application` |
+
+So the 12288 bug is gone; what remains is the timing-sensitive heap grooming.
+A new hypothesis worth testing: the pad streams `0x30` input reports at 125 Hz,
+which is a continuous USB interrupt load on the console exactly while the
+exploit is grooming the heap. A `/pause` on the pad (stop streaming after the
+menu work, before `V=START`) would test that cheaply.
+
+### Two environmental faults seen again
+
+- **HDMI output dies while the console is alive.** After launching SmileBASIC the
+  capture went black at 1080p, 1440p and 720p while the console answered ping and
+  kept polling the pad (`reportsSent` climbing, `rawSet` climbing). A power cycle
+  restores it; the app launch seems to trigger it.
+- **The Fingerbot lost its travel.** `dp102` (down) and `dp105` (rest) were both
+  95, so `/press` moved nothing until the arm was reseated; even then the 16 s
+  hold only powered the console off on the second attempt. `/press?seconds=N` is
+  the endpoint to use (switch mode, host-timed).
