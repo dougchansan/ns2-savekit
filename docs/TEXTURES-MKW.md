@@ -196,3 +196,8 @@ material, and every referenced texture.
 
 Ring and character both export with sane bounds; positions are written once per
 shape with one `g` block of faces per mesh.
+
+Array and cubemap surfaces: `--layer N` decodes a single layer assuming contiguous
+layers (`layer_stride = size / layers`). That holds for the 8-layer 128×128 RGBA16F
+probe, where `size / 8` is exactly one face; layer 0 decodes correctly and layer 1
+of that probe comes out black, so the stride is verified for layer 0 only.
