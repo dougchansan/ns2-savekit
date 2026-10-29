@@ -102,12 +102,14 @@ this checkout. The exploit is not part of this repository - get it from
 
 ```sh
 # 1. Start the exploit and leave it running. It prints the run folder.
-node run.cjs --rpc 192.168.50.34
+#    <LOCAL RPC IP> is the local IP of THIS computer, not the console: the console
+#    dials back to it, so it must be an address the Switch can reach.
+node run.cjs --rpc <LOCAL RPC IP>
 #    -> Run folder: runs/switch2-XXXXXX
-#    then, in a freshly opened SmileBASIC:
+#    then, in a freshly opened SmileBASIC, with a.b.c.d = the four octets of <LOCAL RPC IP>:
 #      RUN
 #      REMOVE NSR,&H60000000,&H3FFFFFFF
-#      V=START(39380,192,168,50,34,0,0,0,0)
+#      V=START(39380,a,b,c,d,0,0,0,0)
 
 # 2. Drive everything else from the guided menu
 node tools/kit.cjs
@@ -164,10 +166,19 @@ Seedsow Lullaby (demo)  (010042d022aea000)
   8) Back to the title list
 ```
 
+**`4` is not ready yet.** The payload files it writes are built and pass a local
+smoke test against a mock engine, but they have **not been installed on hardware
+yet**, so nothing claimed in this README depends on them. `5` is the install that
+has been run end to end on a console; see [Next: untethered](#next-untethered).
+
 Everything marked `[save op]` opens the save, so **each may be used once per
 console boot** - the marker, and the line above the menu, are there so you pick
 the one you need instead of discovering the limit when the second one crashes the
 host.
+
+That menu is walked through end to end in the
+[worked example](#worked-example-install-the-seedsow-lua-editor-save); the rest of
+this section is the reference for what each entry does.
 
 The two install actions **back the save up themselves** if you have not backed it
 up yet, so installing the editor save or the payload files is one choice rather
@@ -206,6 +217,7 @@ artefacts and the purpose differ.
 | who made it | this repository | [DialingSpoon527's editor](https://github.com/DialingSpoon527/seedsow-lua-editor) (fetched, not bundled) |
 | gets you | headless: our body runs at every boot, no UI, no console authoring | a console-side editor: type Lua with the game's keyboard, slots 4-120, Save + publish |
 | footprint | replaces nothing but slot 4 | replaces slots 1-3 and adds its own files |
+| status | **not yet installed on hardware** (mock-engine smoke test only) | installed and verified on hardware: 275 files, 4,511,900 bytes, every hash read back |
 
 **Order matters if you want both.** Install the editor first (it writes slot 4's
 hello example), then the payload (which takes slot 4 for its body). Do it the
@@ -234,16 +246,19 @@ Nothing about anyone else's console is in this repository:
   account, so the first title you touch asks which user owns the save:
 
   ```
-  Which user owns this save?
+  saves found for 3 users
+  Which save do you want?
     1) user 1   539fd277…3664
     2) user 2   6cd51710…3664
     3) user 3   e3f05df2…3664
-    4) all users (one folder per user)
+    4) all of the above (one folder per user)
   ```
 
-  The slots come from the console's account service, not from a list; the answer is
-  remembered per title, so it asks once per title at most. `4` probes each account
-  read-only and pulls only the ones that actually have a save.
+  The slots come from the console's account service, not from a list. With a
+  single account there is no prompt at all - the kit prints `save found for user 1
+  (539fd277…3664)` and carries on - and any answer is remembered per title, so it
+  asks once per title at most. The `all of the above` entry applies to backups: it
+  probes each account read-only and pulls only the ones that actually have a save.
 
 ### Console input over WiFi (no kernel extension)
 
@@ -269,106 +284,182 @@ arduino-cli upload  --fqbn esp32:esp32:esp32s2 -p /dev/cu.usbmodem* esp32_hid.in
 The board prints nothing to the Mac; find it by scanning for its endpoint:
 
 ```sh
-seq 1 254 | xargs -P 64 -I{} sh -c 'curl -s -m 1 http://192.168.50.{}/status \
-  2>/dev/null | grep -q "\"ok\":true" && echo 192.168.50.{}'
+# <SUBNET> is <LOCAL RPC IP> without its last octet (10.0.0.42 -> 10.0.0)
+seq 1 254 | xargs -P 64 -I{} sh -c 'curl -s -m 1 http://<SUBNET>.{}/status \
+  2>/dev/null | grep -q "\"ok\":true" && echo <SUBNET>.{}'
 ```
 
 SmileBASIC inverts letter case on USB keyboards; the firmware applies that rule, so
 text goes through `/type` rather than raw HID codes.
-## Worked example: Seedsow Lullaby demo, pull then install
 
-One session, one save operation, uid typed once (nicknames are not decoded yet, so
-the account is addressed by its 16-byte uid).
+## Worked example: install the Seedsow Lua Editor save
+
+The whole install is one guided session: `tools/kit.cjs` picks the title, finds
+the account, takes the backup the write requires, fetches the editor release and
+writes the save in one committed transaction. You answer a handful of prompts -
+three numbers, one blank and one `y`. The scripts it shells out to are listed at
+the end, for scripting.
+
+### Before you start
+
+- **A held session**, in its own terminal:
+  `node run.cjs --rpc <LOCAL RPC IP>` printing `Run folder: runs/switch2-XXXXXX`.
+  Leave it running and keep SmileBASIC open.
+- **A save that already exists.** Launch Seedsow Lullaby Demo once, reach the
+  title screen and close it fully (**Home → X → Close**). fsp-srv creates no save
+  data - until the game has made an archive, every attempt returns `0x7d402` for
+  every account and space.
+- **`node` 20+, `python3`, `curl`, `unzip`.** `curl` and `unzip` are only used
+  when the kit has to fetch the editor release for you (step 3).
+
+### Step 1 - start the kit and pick the title
 
 ```sh
-node ~/ns2jb-rpc/run.cjs --rpc 192.168.50.34     # prints: Run folder: runs/switch2-XXXXXX
-node tools/kit.cjs ~/ns2jb-rpc/runs/switch2-XXXXXX
+node tools/kit.cjs                 # no argument: newest held session
 ```
 
+It opens with a four-line safety notice, then:
+
 ```
+Which session?
+  1) newest: switch2-XXXXXX
+Number 1-1 (blank = back): 1
+session: /…/ns2jb-rpc/runs/switch2-XXXXXX
+
 9 installed applications  (✔ = write-allowed)
+---------------------------------------------
   [1] ✔ Nora to Oujo to Noraneko Heart 2 (trial)  (010012900d38a000)
   [2] ✔ Seedsow Lullaby (demo)                     (010042d022aea000)
   …
 
-Number 1-9 (blank = quit): 2
-account uid (32 hex chars): 539fd27752770010a6ec4984c56d3664   ← once, then remembered
+Number 1-9  (i = save inventory, blank = quit): 2
+```
 
+`✔` means the title is in your write allowlist; without it every write is
+refused. An `i` here shows the read-only inventory instead.
+
+### Step 2 - choose the editor install
+
+```
 Seedsow Lullaby (demo)  (010042d022aea000)
-  (CHOOSE ONE, ONLY ONE SAVE OPERATION IS ALLOWED PER SESSION)
+  Artemis save detected
+  (each entry opens the save once; several in a row usually work - restart if one fails)
   1) List files in this save (read-only)      [save op]
-  2) Save: back this save up                     [save op]
-  3) Replace: write files from a directory        [save op]
-  4) Install payload files (Artemis launcher)     [save op]
-  5) Install the Seedsow Lua Editor save          [save op]
-  6) Delete a file (optional)                     [save op]
-  7) Verify: compare the save with what we wrote  [save op]
+  2) Save: back this save up                   [save op]
+  3) Replace: write files from a directory     [save op]
+  4) Install payload files (Artemis launcher)  [save op]
+  5) Install the Seedsow Lua Editor save       [save op]
+  6) Delete a file (optional)                  [save op]
+  7) Verify: compare the save with what we wrote [save op]
   8) Back to the title list
 
-Number 1-8 (blank = back): 2
-
-$ node tools/save-pull-root.cjs …/switch2-XXXXXX 010042d022aea000 \
-      /…/ns2-savekit/saves/Seedsow-Lullaby-demo 539fd27752770010a6ec4984c56d3664
-mounted space=User type=Account uid=539fd27752770010a6ec4984c56d3664
-  /system.dat (5583 bytes)
-  /saveg.dat (2104 bytes)
-  …
-done: 290 files, 4651736 bytes -> /…/saves/Seedsow-Lullaby-demo
-```
-
-Pull lands in `saves/Seedsow-Lullaby-demo/user-539fd277/2026-10-28_0244` - a folder per
-game, per account, per pull, so nothing is overwritten and older pulls stay
-comparable. No path is asked for. Restart
-the console, run the kit again, and choose `5` to put a save *back* — the editor
-release is fetched automatically when the directory is missing:
-
-```
 Number 1-8 (blank = back): 5
-Directory with the editor save (blank = fetch it for me) [~/.cache/…]:
-unpacked 273 files into ~/.cache/ns2-savekit/seedsow-editor
-$ node tools/save-write-stage.cjs … 275 files, one commit
 ```
 
-`3` does the same for any directory of files — a backup from another console, a
-mod, or a save you built yourself. `7` verifies afterwards, on the *next* boot,
-because verify is itself a save operation.
-## Install the Seedsow Lua Editor save
+The two Artemis entries (`4`, `5`) only appear when the save holds Artemis files;
+on any other title the menu is `1`-`3`, then delete, verify, back. `4` is not
+ready yet - see [Next: untethered](#next-untethered). `5` is the install that has
+been run on hardware.
 
-Requirements: `node` 20+, `python3`, `curl`, `unzip`, and a held ns2jb session
-(`node run.cjs --rpc <computer-ip>` printing `Run folder: runs/switch2-XXXXXX`).
+### Step 3 - answer the prompts
 
-**Step 0 — the target save must already exist.** fsp-srv creates no save data;
-the game does. Launch Seedsow Lullaby Demo once, get to the title screen, and
-close it fully (**Home → X → Close**). Until you do, every attempt returns
-`0x7d402` for all account/space/type combinations.
+The account is normally found for you, and the answer is remembered per title in
+`config/uids.json`:
+
+```
+save found for user 1 (539fd277…3664)
+```
+
+With more than one account it asks which one. `all of the above` means one folder
+per user (for a backup); any other action then picks the first account that
+actually has a save. If the console's account list cannot be read at all, it falls
+back to `account uid (32 hex chars):`.
+
+The install then **backs the save up first**, fetches the editor release, and
+shows the whole file list before writing anything:
+
+```
+No backup yet: pulling one now, then writing the editor save.
+pulling into saves/Seedsow-Lullaby-demo/user-539fd277/2026-10-29_1201
+$ node tools/save-pull-root.cjs /…/switch2-XXXXXX 010042d022aea000 \
+      /…/saves/Seedsow-Lullaby-demo/user-539fd277/2026-10-29_1201 539fd277…3664
+mounted space=User type=Account uid=539fd27752770010a6ec4984c56d3664
+     5583  /system.dat
+     2104  /saveg.dat
+  …
+done: 290 files, 4651736 bytes -> /…/saves/Seedsow-Lullaby-demo/user-539fd277/2026-10-29_1201
+
+backup: /…/saves/Seedsow-Lullaby-demo/user-539fd277/2026-10-29_1201
+
+Directory with the editor save (blank = fetch it for me) [~/.cache/ns2-savekit/seedsow-editor]:
+no editor save at … - fetching the official release (0BSD):
+$ tools/fetch-editor-save.sh /…/.cache/ns2-savekit/seedsow-editor
+downloading https://github.com/DialingSpoon527/seedsow-lua-editor/releases/download/v0.1.2/Seedsow-Lua-Editor-Save.zip
+unpacked the release into /…/.cache/ns2-savekit/seedsow-editor
+staging/editor-manifest.json: 275 files, 9 replace, 266 add, 4.3 MiB
+
+about to write 275 file(s) into 010042d022aea000
+------------------------------------------------
+  /sed01.asb                                     (replace, verified)
+  /ssedit1.lua                                   (add)
+  …
+Proceed? This commits one transaction [y/N]: y
+
+$ node tools/save-write-stage.cjs /…/switch2-XXXXXX 010042d022aea000 539fd277…3664 …
+mounted read-write; writing /sed01.asb …
+commit -> 0x0
+…
+committed
+
+Done. Option 7 verifies it against the console.
+```
+
+Only the confirmation prompt needs `y`; a blank answer there writes nothing. A
+blank answer at the *directory* prompt means "fetch it for me", not "quit".
+Every backup is kept as `saves/<game>/user-<first 8 of uid>/<timestamp>`, so a
+retry never overwrites the copy the write is checked against.
+
+### Step 4 - use it
+
+Boot the demo and choose **Load → slot 1**; that slot's title reads **LUA EDITOR
+V3** and the editor appears. Tested exactly this way on hardware: 275 files,
+4,511,900 bytes, every hash identical to the release, no JKSV, no Switch 1 and no
+Nintendo save transfer.
+
+### Step 5 - prove it on the next boot
+
+`7` pulls the save again and compares every staged file byte-for-byte with what
+was written. Verify is itself a save operation, so it cannot follow the install in
+the same boot: restart the console, start a new session, run the kit, pick the
+title and choose `7`. The order is always **back up → write → restart → verify**.
+
+### If a step fails
+
+| what you see | what it means | what to do |
+| --- | --- | --- |
+| `0x7d402` for every account | the game has not made a save yet | launch the demo and close it fully, then retry |
+| `Directory exceeds the N-entry probe limit` | your copy predates the 2048-entry limit | raise it in `tools/save-pull-root.cjs` and `tools/save-write-stage.cjs` |
+| `SESSION LOST` / `transport 0xf601` | the console stopped answering | restart the console, reopen SmileBASIC, start a new session |
+| `NO LIVE HOST` / `memory.sock` | the session folder is stale or gone | start `run.cjs` again and use the run folder it prints |
+| the title is listed without `✔` | it is not in your write allowlist | add its id to `config/titles.local.json` |
+| names are missing, ids only | the titledb cache could not be fetched | connect once with network access, or add names to `config/titles.local.json` |
+
+### What the kit runs
+
+`kit.cjs` adds no save logic of its own: it shells out to the same scripts, with
+the exact arguments printed before each one. Doing it by hand, or from a script:
 
 ```sh
-# 1. Which account owns the save? (16-byte AccountUid, printed as hex)
 node tools/find-save-uid.cjs runs/switch2-XXXXXX 010042d022aea000
-
-# 2. Back the save up (read-only) -- this is required before any write
 node tools/save-pull-root.cjs runs/switch2-XXXXXX 010042d022aea000 saves/demo <uid>
-
-# 3. Fetch the editor release (0BSD, from GitHub; nothing is bundled here)
 ./tools/fetch-editor-save.sh /tmp/seed
-
-# 4. Build the install manifest: existing files become verified replaces,
-#    everything else is add-only
 python3 tools/build-editor-manifest.py /tmp/seed saves/demo staging/manifest.json
-
-# 5. One transaction: open, write 275 files, commit, re-read and hash them all
 node tools/save-write-stage.cjs runs/switch2-XXXXXX 010042d022aea000 <uid> \
      saves/demo staging/manifest.json
 ```
 
-Boot the demo and choose **Load → slot 1**; the title of that slot reads
-**LUA EDITOR V3** and the editor appears. Tested exactly this way on hardware:
-275 files, 4,511,900 bytes, every hash identical to the release, no JKSV, no
-Switch 1 and no Nintendo save transfer.
-
-If step 5 reports `Directory exceeds the N-entry probe limit`, your copy is older
-than the 2048-entry limit — raise it in `tools/save-pull-root.cjs` and
-`tools/save-write-stage.cjs`.
+The hand-written path uses one flat `saves/demo`; the kit uses the timestamped
+directory above, which is the one `7` compares against later.
 
 ## Next: untethered
 
