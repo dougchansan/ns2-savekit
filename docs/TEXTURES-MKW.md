@@ -87,3 +87,38 @@ Two ways to get the permutation:
 2. Recover it from the driver: `nn::gs::sdk::CalculateNativeImageLayout`
    (0x71003dfbe0 in `sdk`) computes the layout from a format descriptor, and the
    swizzle constants can be read out of it.
+
+## The tiling: block-linear, but not the Switch 1 permutation
+
+The layout is Tegra-style **block linear**: GOBs of 64 bytes × 8 rows, each GOB
+holding 4 × 8 + 16-byte ASTC blocks (a 32 × 64 pixel tile). For the 813×813
+albedo, mip0 is exactly 26 × 13 GOBs × 512 B = 173,056 B, which matches the byte
+range between the mip pointers, so the GOB grid and the block height/depth
+(`1 << 0`) are certain.
+
+The GOB placement is right: deswizzling with the documented formula
+
+    gob_off(x,y) = (x%64/32)*256 + (y%8/2)*64 + (x%32/16)*32 + (y%2)*16 + x%16
+
+from [nxnative's nvn_deswizzle.c](https://github.com/seedds/nxnative/blob/7861e7c1a9913e020600b1cc7f65132427e9cc50/dm/gfx/tex/nvn_deswizzle.c)
+produces an image whose large regions are correct (Mario's blue overalls, red
+shirt, skin tones all in the right places) but with an 8-pixel mosaic on top: the
+32 blocks inside each GOB are permuted differently from the Switch 1 order.
+
+Variants tried, all scored by decoded-image smoothness and inspected:
+
+| variant | result |
+| --- | --- |
+| plain raster, pitch 102 blocks | 12.9 — worse, so the data really is tiled |
+| GOB, Tegra intra-GOB formula | large regions correct, 8-px mosaic |
+| GOB, row-major intra-GOB | same mosaic |
+| GOB, column-major intra-GOB | vertical streaks, worse |
+| GOB, x/y swapped formula | worse |
+| all 120 bit-permutations of the intra-GOB 5-bit index | all worse than the mosaic |
+| hill-climb over all 32! intra-GOB assignments (colour-affinity objective) | overfit, no recognisable image |
+
+So the remaining unknown is one permutation of 32 slots, or a different GOB
+geometry for this GPU generation. The next thing to try is a bit-exact
+implementation of the *Switch 2* unswizzle from a project that runs retail Switch 2
+software (eden ships `block_linear_unswizzle_2d.comp`) rather than the Switch 1
+formula, plus a known-content texture to fit against.
