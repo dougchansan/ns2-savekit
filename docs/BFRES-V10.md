@@ -162,3 +162,17 @@ terrain file has stride 8) or are truncated now yield an empty shape rather than
 raising, so those models still export their textures; per-shape position offsets
 are validated and fall back to a shared offset only when implausible; the outlier
 clamp scales to each model's median size.
+
+### Coverage
+
+    4,803 models exported      4,802 with geometry, 1 empty (TeraTerrain, stride 8)
+    98,647,992 vertices        62,422,073 faces
+    largest: Stage_DonkeyKong_FarModel 765,439 v / 291,198 f
+             Stage_Central_FarModel    700,809 v / 287,673 f
+             Stage_PeachBeach_FarModel 662,610 v / 282,078 f
+
+Together with the texture export that is the complete renderable asset set:
+~4.1 GB of OBJ+MTL and ~23.6 GB of PNG.
+
+Still unsupported: animation-only files (`*.anim.bfres`, 1,024 of them — FSKA/FMTB
+curve data) and the skeleton, so the exported meshes are unrigged.
