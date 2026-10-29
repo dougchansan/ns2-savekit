@@ -649,3 +649,52 @@ menu work, before `V=START`) would test that cheaply.
   95, so `/press` moved nothing until the arm was reseated; even then the 16 s
   hold only powered the console off on the second attempt. `/press?seconds=N` is
   the endpoint to use (switch mode, host-timed).
+
+## 2026-10-28 17:46: 4/4, reached by the automated cycle
+
+`tools/cycle.py` now goes from a wedged console to a held FS root with no hands
+and no fixed tile offsets. The run that did it: `switch2-cyPbdM`, `4/4 REACHED`,
+`switch2/ro/root/current-root.json` present, `list-apps` reporting 9 titles.
+
+What it took, in order:
+
+1. **Power**: 16 s force-off, 1 s press (Fingerbot `/press?seconds=N`).
+2. **Leave the news view**: the console boots onto the news channel, where no
+   tile is selected and no title label exists. **B** (or HOME) enters the game
+   row. The earlier DOWN presses were pushing focus onto the icon row and made
+   the menu look empty.
+3. **Select by reading the screen**: macOS Vision OCR (`tools/vision/ocr.swift`,
+   built with `xcrun swiftc`) reads the title label above the selected tile. The
+   cycle steps RIGHT one tile at a time until the label names SmileBASIC (and not
+   DEMO). A fixed offset cannot work: the row reorders with recency and skips
+   virtual-game-card tiles.
+4. **Drive the dialogs by text**: "who is using the software" -> A, "tag
+   information" -> A, "Make a Program" -> A, then wait for `bytes free`.
+5. **Silence the pad**: `/stream?on=0` stops the 125 Hz 0x30 reports during the
+   acquisition (the one console-side load we can remove); `/stream?on=1` before
+   navigating.
+6. **Session**: start `run.cjs`, upload a fresh script through the Flipper bridge,
+   press Run, wait for 4/4 / `current-root.json`.
+
+Stage 2 took 3m38s this time and passed.
+
+### Then a sweep wedged the native path
+
+`tools/probe-commands.cjs <run> 0 24` (attempting to find an fsp-srv
+`OpenSdCardFileSystem` id) left the session answering `status` but refusing every
+native request with `Another memory request is active`. `list-apps` had worked
+seconds earlier, so the probe itself is what wedged it: one command in 0..24
+blocks rather than returning. If that sweep is retried it must be narrowed and
+run only on a throwaway session.
+
+### SD card, what is known
+
+- The savekit has **no** SD-card path: it opens save archives through fsp-srv
+  51/53 on the promoted root, and those take a `SaveDataAttribute` (space,
+  program id, uid, type). Spaces include `2 = SdSystem` and `4 = SdUser`, so a
+  *save* can live on the SD, but that is not the SD filesystem.
+- SmileBASIC's own `TXT:` project storage — the thing `LOAD "TXT:NS2"` reads — is
+  on the SD card, so the game clearly reaches it; that is the path the operator
+  meant by "SD works, it is just RNG".
+- Reading arbitrary SD files over the exploit needs an SD filesystem open on the
+  promoted root, which is what the sweep was looking for.
