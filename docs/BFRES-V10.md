@@ -176,3 +176,32 @@ Together with the texture export that is the complete renderable asset set:
 
 Still unsupported: animation-only files (`*.anim.bfres`, 1,024 of them — FSKA/FMTB
 curve data) and the skeleton, so the exported meshes are unrigged.
+
+## Skeletons and animations (2026-10-29)
+
+**FMDL+0x18 -> FSKL.** Bone headers are 0x58 bytes from the array pointer at
+`FSKL+0x10`; the count is the u16 at `FSKL+0x38`:
+
+| offset | field |
+| --- | --- |
+| +0x00 | bone name (NW string) |
+| +0x22 | parent index (s16, -1 for the root) |
+| +0x30 | scale (3 floats) |
+| +0x3C | rotation (3 floats, Euler radians) |
+| +0x4C | translation (3 floats) |
+
+`tools/bfres10.py` exposes `skeleton(b)`; `mkw_export.py` writes
+`<model>.skeleton.json` for every model. All **4,803** exported models now have
+one (4,803 skeletons; median rig is small, the largest are characters).
+
+**FSKA (skeletal animation)** headers are 0x50 bytes: size +0x04, name +0x08,
+bone-anim header array +0x20, curve/default-result data +0x48 (u32), bone-anim
+count +0x40, curve count +0x44, frame count +0x4C. `tools/bfres10_anim.py` indexes
+them — DriverA_Mario_MBike.anim has 40 clips (`MBikeBackL` 55 frames / 30 bone
+anims / 105 curves, `MBikeDamageThunder` 90 bone anims, ...).
+
+The animation payload begins with a table of `-1` entries, then per-bone default
+transforms as floats (rest scale/rotation/translation), then the curve headers and
+the frame/value pools at the offsets the headers point to. **The curve-header
+layout is not decoded yet**, so clips are indexed but not sampled — that is the one
+remaining piece before a rigged, animated glTF.

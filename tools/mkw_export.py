@@ -65,7 +65,24 @@ def export_model(model_path, out_root, tex_source=None, tex_cache=None):
     os.makedirs(out_dir, exist_ok=True)
     obj = os.path.join(out_dir, name + '.obj')
     record = {'model': model_path, 'name': name, 'obj': obj}
+    skeleton_path = os.path.join(out_dir, name + '.skeleton.json')
     if os.path.exists(obj):
+        # A previous pass wrote the mesh; still fill in the skeleton if it predates
+        # skeleton support.
+        if not os.path.exists(skeleton_path):
+            try:
+                raw_path = os.path.join(out_dir, name + '.bfres')
+                decompress(model_path, raw_path)
+                b = np.fromfile(raw_path, dtype=np.uint8)
+                bones = bfres10.skeleton(b, bfres10.parse(b)['model'])
+                os.unlink(raw_path)
+                if bones:
+                    with open(skeleton_path, 'w') as f:
+                        json.dump({'model': name, 'bones': bones}, f, indent=1)
+                    record.update({'skeleton': len(bones), 'ok': True})
+                    return record
+            except Exception as error:
+                record['error'] = str(error)[:160]
         record['skipped'] = True
         return record
 
