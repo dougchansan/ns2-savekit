@@ -118,10 +118,25 @@ def position_offset(rec):
             best = (off, extent)
     return best[0]
 
+def choose_offset(rec, shared=None):
+    """Prefer this shape's own detection, fall back to the shared one.
+
+    Same stride does not imply the same attribute offset (one character model has
+    0, 16 and 20 for stride 36), so the shared offset is only used when the shape's
+    own pick is implausible (a small buffer dominated by sentinel vertices).
+    """
+    auto = position_offset(rec)
+    v = rec[:, auto:auto + 12].copy().view('<f4').reshape(rec.shape[0], 3).astype(np.float64)
+    rows = (np.abs(v) < 1e3).all(axis=1)
+    if rows.mean() > 0.9 and np.isfinite(v[rows]).all():
+        return auto
+    return shared if shared is not None else auto
+
+
 def shape_geometry(b, shape, forced_offset=None):
     v = shape['vertex']
     rec = b[v['data']:v['data'] + v['stride'] * v['count']].reshape(v['count'], v['stride'])
-    off = position_offset(rec) if forced_offset is None else forced_offset
+    off = choose_offset(rec, forced_offset)
     pos = rec[:, off:off + 12].copy().view('<f4').reshape(v['count'], 3).astype(np.float64)
     idx = b[shape['meshes'][0]['index']:shape['meshes'][0]['index'] + shape['meshes'][0]['count'] * 2] \
         .copy().view('<u2').astype(np.int64)
@@ -210,20 +225,38 @@ def preview(path, pos, idx):
     img.save(path)
 
 
+def choose_offset(rec, shared=None):
+    """Prefer this shape's own detection, fall back to the shared one.
+
+    Same stride does not imply the same attribute offset (one character model has
+    0, 16 and 20 for stride 36), so the shared offset is only used when the shape's
+    own pick is implausible (a small buffer dominated by sentinel vertices).
+    """
+    auto = position_offset(rec)
+    v = rec[:, auto:auto + 12].copy().view('<f4').reshape(rec.shape[0], 3).astype(np.float64)
+    rows = (np.abs(v) < 1e3).all(axis=1)
+    if rows.mean() > 0.9 and np.isfinite(v[rows]).all():
+        return auto
+    return shared if shared is not None else auto
+
+
 def shape_geometry(b, shape, forced_offset=None):
     """Positions for a shape's vertex buffer and the index list of each mesh."""
     v = shape['vertex']
     rec = b[v['data']:v['data'] + v['stride'] * v['count']].reshape(v['count'], v['stride'])
-    off = position_offset(rec) if forced_offset is None else forced_offset
+    off = choose_offset(rec, forced_offset)
     pos = rec[:, off:off + 12].copy().view('<f4').reshape(v['count'], 3).astype(np.float64)
     # Collapse sentinel vertices to the origin. The threshold scales with the model
     # so a 20k stray in a 10-unit mesh is dropped too.
     finite = np.isfinite(pos).all(axis=1)
-    inlier_rows = (np.abs(pos[finite]) < 1e3).all(axis=1)
+    inlier_rows = finite & (np.abs(pos) < 1e3).all(axis=1)
     if inlier_rows.any():
-        limit = max(1e3, 50.0 * float(np.percentile(np.abs(pos[finite])[inlier_rows], 99)))
+        # Scale to the model itself: a character is ~2 units, a ring ~20, so a
+        # fixed ceiling either lets strays through or clips real geometry.
+        median = float(np.median(np.abs(pos[inlier_rows])))
+        limit = max(10.0, 20.0 * median)
     else:
-        limit = 1e3
+        limit = 10.0
     bad = ~finite | (np.abs(pos).max(axis=1) > limit)
     pos[bad] = 0.0
     meshes = []
