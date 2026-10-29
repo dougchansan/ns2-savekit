@@ -122,9 +122,8 @@ def decode(info, blocks, width, height):
         return np.frombuffer(t2d.decode_bc6(blocks.tobytes(), width, height),
                              dtype=np.uint8).reshape(height, width, 4)
     if name in ('BC1', 'BC4'):
-        rgb = np.frombuffer(t2d.decode_bc1(blocks.tobytes(), width, height), dtype=np.uint8)
-        rgb = rgb.reshape(height, width, 4)
-        return np.concatenate([rgb, np.full((height, width, 1), 255, np.uint8)], axis=2)
+        return np.frombuffer(t2d.decode_bc1(blocks.tobytes(), width, height),
+                             dtype=np.uint8).reshape(height, width, 4)
     if name in ('BC3', 'BC5', 'BC7U'):
         fn = {'BC3': t2d.decode_bc3, 'BC5': t2d.decode_bc5, 'BC7U': t2d.decode_bc7}[name]
         return np.frombuffer(fn(blocks.tobytes(), width, height), dtype=np.uint8).reshape(height, width, 4)
