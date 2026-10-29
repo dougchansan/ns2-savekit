@@ -46,3 +46,44 @@ The concrete next step is to identify the format ids — the mangled
 `GpuOunceImageBlockFormat`/`GpuOunceImagePixelFormat` names are in `sdk`, so the
 enumerator values are recoverable, and the block size can be confirmed against the
 declared texture size (blocks × block bytes × mip factor must equal `BRTI+0x50`).
+
+## The format ids are ordinary `nn::gfx::ImageFormat` values (solved)
+
+The EPD wiki's [Common nn::gfx](https://epd.zeldamods.org/wiki/Common_nn::gfx) page
+gives the rule: `ImageFormat = (ChannelFormat << 8) | TypeFormat`, with
+`ChannelFormat` ASTC_8x8 = 0x34, BC6H = 0x1f, R16 = 0x0a, and `TypeFormat`
+Unorm = 0x1, SRGB = 0x6, UFloat = 0x0a. Every id we saw decodes exactly:
+
+| BRTI format | channel | type | meaning |
+| --- | --- | --- | --- |
+| `0x3406` | 0x34 ASTC_8x8 | 0x06 SRGB | ASTC 8×8 sRGB — every albedo |
+| `0x3401` | 0x34 ASTC_8x8 | 0x01 Unorm | ASTC 8×8 linear |
+| `0x1f0a` | 0x1f BC6H | 0x0a UFloat | BC6H UF16 (HDR bake) |
+| `0x0a01` | 0x0a R16 | 0x01 Unorm | plain 16-bit (shadow maps) |
+
+So `Ounce` was never a proprietary codec: these are standard **ASTC 8×8** and
+**BC6H** textures. `texture2ddecoder` decodes them (`decode_astc`), and the
+declared sizes agree — mip0 of the 813×813 Mario albedo is 169 tiles of 8×8
+blocks, i.e. a 13×13 block-tile grid over a padded 832×832 surface.
+
+## What is still wrong: the surface tiling
+
+The `BRTI+0x2A0` mip pointer array gives exact per-mip file offsets (mip0 0x400,
+mip1 0x2A800, …), so the data region and mip boundaries are not in doubt. But
+decoding mip0 in plain raster order gives horizontal bands, and none of the four
+tile/block traversal orders (tile-x-first vs tile-y-first × block-x-first vs
+block-y-first) produces an image — all four look like scrambled blocks with
+visible 64-pixel seams.
+
+`tile mode = 0` is `nn::gfx::TileMode::Optimal`, so the surface is stored in the
+GPU's optimal (swizzled) layout, and that permutation is what is missing. Every
+sampled texture in `Tex/` is mode 0 (120/120), so there is no linear example to
+compare against.
+
+Two ways to get the permutation:
+
+1. Solve it empirically against a texture with known content (a flat or gradient
+   bake), which gives a simple target to fit.
+2. Recover it from the driver: `nn::gs::sdk::CalculateNativeImageLayout`
+   (0x71003dfbe0 in `sdk`) computes the layout from a format descriptor, and the
+   swizzle constants can be read out of it.
