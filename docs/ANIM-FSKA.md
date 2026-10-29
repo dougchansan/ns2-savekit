@@ -228,3 +228,32 @@ then reading the curve type from the flags rather than assuming, is the next ste
 The spec itself is no longer the gap: the flag layout, field semantics and curve
 interpolation formulas (step, linear, hermite) are all documented on that page,
 including the fixed-point key format.
+
+### Fourth pass: base values vs frame 0
+
+Each bone animation points at base values (+0x10). For `Arm_1_L` they read
+`[1.0, 1.0, 1.0, 1.9414, -0.2644, -1.117, 1.0, 0.1456, 0.1914, 0.1261]` — a clean
+`scale(3) · rotation(3) · ? · translation(3)` layout with a plausible rest pose.
+Comparing them against frame-0 values derived as `key0 × (delta / key_range) + add`:
+
+| channel | base | derived frame 0 | delta |
+| --- | --- | --- | --- |
+| rot x | 1.9414 | 1.2211 | 1.233 |
+| rot y | −0.2644 | −0.0166 | |
+| rot z | −1.117 | −0.6547 | |
+| trans x | 0.1456 | 0.0623 | 0.1452 |
+| trans y | 0.1914 | −0.0786 | 0.1914 |
+| trans z | 0.1261 | −0.0261 | |
+
+Two observations: the base translation `x` equals the curve's `delta` exactly
+(0.1456 vs 0.1452), and the rotation base is consistently *larger* than the derived
+frame-0 value. Neither the "base is frame 0" nor the "base is the delta" reading
+holds across channels, and the bind pose is not the comparison (a clip starts in an
+idle pose, which is why the earlier rest-pose test could not settle it either).
+
+So the file *format* is documented and the structures are parsed, but the mapping
+from these quantised keys to real values still has one unknown — most likely the
+`scale` field's meaning when it reads 0 ("not used by all curves" in the spec) —
+and settling it needs a reference that samples the same curves, or a capture from
+the running game. That is the state of the work; nothing further can be concluded
+from the byte patterns alone without risking invented poses.
