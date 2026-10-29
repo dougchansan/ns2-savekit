@@ -47,8 +47,11 @@ CHANNELS = {0x2d: ('ASTC_4x4', 4, 4, 16), 0x2e: ('ASTC_5x4', 5, 4, 16),
             0x20: ('BC7U', 4, 4, 16), 0x1a: ('BC1', 4, 4, 8),
             0x1c: ('BC3', 4, 4, 16), 0x1d: ('BC4', 4, 4, 8),
             0x1e: ('BC5', 4, 4, 16), 0x0a: ('R16', 1, 1, 2),
-            0x0b: ('R8G8B8A8', 1, 1, 4), 0x09: ('R8G8', 1, 1, 2),
-            0x02: ('R8', 1, 1, 1)}
+            0x0b: ('R8G8B8A8', 1, 1, 4), 0x0c: ('B8G8R8A8', 1, 1, 4),
+            0x12: ('R16G16', 1, 1, 4), 0x15: ('R16G16B16A16', 1, 1, 8),
+            0x14: ('R32', 1, 1, 4), 0x17: ('R32G32', 1, 1, 8),
+            0x19: ('R32G32B32A32', 1, 1, 16), 0x0e: ('R10G10B10A2', 1, 1, 4),
+            0x09: ('R8G8', 1, 1, 2), 0x02: ('R8', 1, 1, 1)}
 TYPES = {0x01: 'Unorm', 0x02: 'Snorm', 0x03: 'UInt', 0x04: 'SInt', 0x05: 'Float',
          0x06: 'SRGB', 0x07: 'Depth', 0x0a: 'UFloat'}
 
@@ -131,6 +134,33 @@ def decode(info, blocks, width, height):
         v = blocks.view('<u2').astype(np.float32) / 65535.0
         g = np.clip(v * 255, 0, 255).astype(np.uint8)
         return np.dstack([g, g, g, np.full_like(g, 255)])
+    if name in ('R16G16', 'R16G16B16A16', 'R32G32', 'R32G32B32A32', 'R32'):
+        # Uncompressed multi-channel: normalise per component. Float types are
+        # tone mapped; unorm types are scaled from their integer range.
+        floating = info['type'] in ('Float', 'UFloat')
+        dtype = {'R16G16': '<f2' if floating else '<u2',
+                 'R16G16B16A16': '<f2' if floating else '<u2',
+                 'R32': '<f4', 'R32G32': '<f4', 'R32G32B32A32': '<f4'}[name]
+        ncomp = {'R16G16': 2, 'R16G16B16A16': 4, 'R32': 1, 'R32G32': 2,
+                 'R32G32B32A32': 4}[name]
+        v = blocks[:width * height * ncomp * np.dtype(dtype).itemsize].view(dtype)
+        v = v.reshape(height, width, ncomp).astype(np.float32)
+        if floating:
+            v = np.clip(v, 0.0, 1.0) if v.max() <= 1.5 else v / max(v.max(), 1e-6)
+            v = np.clip(v * 255.0, 0, 255)
+        else:
+            scale = 65535.0 if np.dtype(dtype).itemsize == 2 else 4294967295.0
+            v = v / scale * 255.0
+        while v.shape[2] < 3:
+            v = np.concatenate([v, v[..., :1]], axis=2)
+        out = v[..., :3].astype(np.uint8)
+        alpha = np.full(out.shape[:2] + (1,), 255, np.uint8)
+        return np.concatenate([out, alpha], axis=2)
+    if name == 'B8G8R8A8':
+        v = blocks.reshape(height, width, 4)[..., [2, 1, 0, 3]]
+        return v
+    if name == 'R8G8B8A8':
+        return blocks.reshape(height, width, 4)
     raise ValueError('unsupported channel ' + name)
 
 
