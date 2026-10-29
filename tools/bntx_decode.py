@@ -87,6 +87,7 @@ def describe(b, brti):
             'block_w': bw, 'block_h': bh, 'bpb': bpb,
             'width': u32(b, brti + 0x24), 'height': u32(b, brti + 0x28),
             'mips': u16(b, brti + 0x16), 'size': u32(b, brti + 0x50),
+            'layers': u32(b, brti + 0x30) or 1,
             'name_ptr': u32(b, brti + 0x60)}
 
 
@@ -171,12 +172,18 @@ def decode(info, blocks, width, height):
     raise ValueError('unsupported channel ' + name)
 
 
-def decode_texture(b, mip=0):
-    """Decode one mip of a BNTX (Ounc) file from bytes. Returns (info, rgba)."""
+def decode_texture(b, mip=0, layer=0):
+    """Decode one mip/layer of a BNTX (Ounc) file. Returns (info, rgba).
+
+    Array and cubemap surfaces store each layer's full mip chain contiguously, so a
+    layer's mip N sits at layer_stride * layer + (offset of mip N in layer 0).
+    """
     brti = u32(b, u32(b, 0x28))
     info = describe(b, brti)
     info['name'] = texture_name(b, info['name_ptr'])
-    mip_ptr = u64(b, brti + 0x2a0 + mip * 8)
+    layers = info['layers']
+    layer_stride = info['size'] // layers if layers > 1 else 0
+    mip_ptr = u64(b, brti + 0x2a0 + mip * 8) + layer * layer_stride
     width = max(1, info['width'] >> mip)
     height = max(1, info['height'] >> mip)
     row_bytes = math.ceil(width / info['block_w']) * info['bpb']
@@ -192,11 +199,12 @@ def main():
     if len(args) < 2:
         raise SystemExit(__doc__)
     mip = int(sys.argv[sys.argv.index('--mip') + 1]) if '--mip' in sys.argv else 0
+    layer = int(sys.argv[sys.argv.index('--layer') + 1]) if '--layer' in sys.argv else 0
     b = open(args[0], 'rb').read()
-    info, rgba = decode_texture(b, mip)
-    print('%s  %dx%d mips %d  %s/%s  size %d' % (
+    info, rgba = decode_texture(b, mip, layer)
+    print('%s  %dx%d mips %d layers %d  %s/%s  size %d' % (
         info['name'], info['width'] >> mip, info['height'] >> mip, info['mips'],
-        info['channel'], info['type'], info['size']))
+        info['layers'], info['channel'], info['type'], info['size']))
     Image.fromarray(rgba, 'RGBA').save(args[1])
     print('wrote', args[1], '%dx%d' % (rgba.shape[1], rgba.shape[0]))
 
