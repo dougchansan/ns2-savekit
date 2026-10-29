@@ -698,3 +698,40 @@ run only on a throwaway session.
   meant by "SD works, it is just RNG".
 - Reading arbitrary SD files over the exploit needs an SD filesystem open on the
   promoted root, which is what the sweep was looking for.
+
+## 2026-10-28 18:49: SD card inserted, tested from SmileBASIC itself
+
+The operator inserted a microSD card and asked whether savekit can pull from it.
+Two separate paths exist, and the game-side one was tested directly by typing
+BASIC through the Flipper (no exploit needed):
+
+| typed | console answered |
+| --- | --- |
+| `FILES "SD:/"` | `Illegal format (FILES)` |
+| `FILES "SD:"` | `Illegal format (FILES)` |
+| `OPEN "SD:/x.txt" FOR INPUT AS #1` | `Syntax error` (this build's OPEN syntax differs) |
+| `FILES` | `-- 3 files --` then `TXT:@BACKUP.PRG`, `TXT:@BACKUP.TXT`, `TXT:NS2` |
+
+So SmileBASIC 4.4.9's programmatic file API exposes **only `TXT:`**; `SD:` is
+rejected as an illegal device format, deterministically, not intermittently. The
+`TXT:` store is where the `NS2` payload lives, and it is the same store that
+`LOAD "TXT:NS2"` reads; pulling it never needed the SD card (the save-pull tools
+already do it).
+
+What has *not* been tested is the TOPMENU **File Manager**, which is a separate
+code path from the BASIC `FILES`/`OPEN` commands and is the only place the card
+might actually be visible to the game. Reaching it from direct mode was not
+solved in this session (B and + did not open the menu).
+
+Exploit-side, nothing changed: savekit has no SD filesystem open, and an unknown
+fsp-srv command id wedges the session (see the 17:46 entry), so the sweep that
+would find one has to run on a throwaway session.
+
+### The card and stage 2
+
+With the card inserted, two of three attempts failed before the session (tile
+selection) and the one that connected failed stage 2 in 3m50s. Without the card,
+stage 2 passed twice today. That matches the existing failure-table entry ("SD
+card inserted changes the FS save allocation"). One pass/fail is not proof, but
+the direction is consistent: keep the card out for the exploit, card in for any
+game-side SD test.
