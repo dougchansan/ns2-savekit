@@ -735,3 +735,35 @@ stage 2 passed twice today. That matches the existing failure-table entry ("SD
 card inserted changes the FS save allocation"). One pass/fail is not proof, but
 the direction is consistent: keep the card out for the exploit, card in for any
 game-side SD test.
+
+## 2026-10-28 19:20: save moved to the SD card, and the pin cost it changes
+
+The operator moved SmileBASIC's save to the microSD card (System Settings > Data
+Management) and asked for another attempt. The console launches the game and the
+RPC connects, but stage 2 fails in every attempt so far, and the failures name a
+number worth recording:
+
+**`Pinning allocation cost changed` — measured `pinCost = 14992`.**
+
+With the save on internal storage the pinned allocation is **13616** bytes; with
+the save moved to the SD card it is **14992**. `probe-reserved-gap.cjs` asserted
+the constant exactly, so the acquisition aborted at the pin.
+
+`engine/switch2/memory/probe-reserved-gap.cjs` now logs the measured cost and
+accepts **either 13616 or 14992**. With that, attempt `iStKAD` moved past the pin
+and failed later at `Overwrite missed the qualified canary`, i.e. the gate was
+real and is now passed, but the rest of the acquisition is still not landing:
+
+| run | result |
+| --- | --- |
+| jdi5V5 | pin did not land in the canary window |
+| EVQ78U | pin cost changed (13616 asserted, measured 14992) |
+| XEZ0ei | pin cost changed |
+| bSTw3j | pin cost changed |
+| iStKAD | overwrite missed the qualified canary (after accepting 14992) |
+| Yb06QR | FS acquisition did not complete (7 min, no error row) |
+
+So moving the save to the SD card is not just "insert a card": it changes the FS
+save allocation the heap groom depends on, and the groom has not been re-tuned for
+it. The card can stay for game-side tests, but a 4/4 session today needs the save
+back on internal storage (and, per the earlier note, the card out).

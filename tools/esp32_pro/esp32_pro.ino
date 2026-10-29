@@ -217,6 +217,7 @@ static u8 inputReport[REPORT_SIZE];      // 0x30 payload
 static u8 reply[REPORT_SIZE];            // 0x81 / 0x21 payload
 static bool hidReady = false;
 static bool announced = false;
+static bool streamPaused = false;
 static bool announce = false;             // /usb?announce=1 sends an unsolicited 0x81 until the host talks
 static uint32_t announcedAt = 0;
 static uint32_t sentAt = 0, releaseAt = 0;
@@ -443,6 +444,7 @@ static void streamInput() {
     return;
   }
   if (!hidReady) return;
+  if (streamPaused) return;       // silenced while the exploit grooms the heap
   if (now - sentAt < 8) return;   // 125 Hz
   sentAt = now;
   inputReport[0] = counter++;
@@ -699,6 +701,16 @@ void setup() {
     server.send(200, "application/json", "{\"ok\":true,\"reboot\":true}");
     delay(150);
     ESP.restart();
+  });
+
+  // /stream?on=0 silences the 0x30 stream (handshake and subcommands continue).
+  // The console's FS acquisition is timing sensitive and a 125 Hz interrupt
+  // stream during it is the one load we can remove.
+  server.on("/stream", [] {
+    bool on = server.hasArg("on") ? server.arg("on") != "0" : true;
+    streamPaused = !on;
+    server.send(200, "application/json",
+      String("{\"ok\":true,\"streaming\":") + (on ? "true" : "false") + "}");
   });
 
   server.on("/usb", [] {
