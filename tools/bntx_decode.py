@@ -131,7 +131,7 @@ def decode(info, blocks, width, height):
         v = blocks.view('<u2').astype(np.float32) / 65535.0
         g = np.clip(v * 255, 0, 255).astype(np.uint8)
         return np.dstack([g, g, g, np.full_like(g, 255)])
-    raise SystemExit('unsupported channel ' + name)
+    raise ValueError('unsupported channel ' + name)
 
 
 def decode_texture(b, mip=0):

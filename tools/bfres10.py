@@ -238,22 +238,26 @@ def shape_geometry(b, shape, forced_offset=None):
     return pos, meshes
 
 
-def write_obj(path, groups, name, material=None):
+def write_obj(path, shapes, name, material=None):
+    """One `o` block of vertices per shape, then a `g` block of faces per mesh."""
     with open(path, 'w') as f:
         f.write('# %s\n' % name)
         if material:
             f.write('mtllib %s\n' % material)
+            f.write('usemtl %s\n' % os.path.splitext(material)[0])
         base = 0
-        for gname, pos, idx in groups:
+        for sname, pos, meshes in shapes:
             if len(pos) == 0:
                 continue
-            f.write('o %s\n' % gname)
+            f.write('o %s\n' % sname)
             for p in pos:
                 f.write('v %.6f %.6f %.6f\n' % tuple(p))
-            for i in range(0, len(idx) - 2, 3):
-                a, b_, c = int(idx[i]), int(idx[i + 1]), int(idx[i + 2])
-                if a != b_ and b_ != c and a != c:
-                    f.write('f %d %d %d\n' % (base + a + 1, base + b_ + 1, base + c + 1))
+            for mi, idx in enumerate(meshes):
+                f.write('g %s_m%d\n' % (sname, mi))
+                for i in range(0, len(idx) - 2, 3):
+                    a, b_, c = int(idx[i]), int(idx[i + 1]), int(idx[i + 2])
+                    if a != b_ and b_ != c and a != c:
+                        f.write('f %d %d %d\n' % (base + a + 1, base + b_ + 1, base + c + 1))
             base += len(pos)
 
 
@@ -263,7 +267,7 @@ def main():
         raise SystemExit(__doc__)
     b = np.fromfile(args[0], dtype=np.uint8)
     model = parse(b)
-    groups = []
+    shapes_out = []
     total_v = total_i = 0
     lo = np.array([np.inf] * 3)
     hi = np.array([-np.inf] * 3)
@@ -282,11 +286,12 @@ def main():
         lo = np.minimum(lo, pos.min(axis=0))
         hi = np.maximum(hi, pos.max(axis=0))
         total_v += len(pos)
-        for mi, idx in enumerate(meshes):
+        for idx in meshes:
             total_i += len(idx)
-            groups.append(('s%d_m%d' % (si, mi), pos, idx))
+        shapes_out.append(('s%d' % si, pos, meshes))
     print('shapes %d  vertices %d  indices %d  materials %d  groups %d' % (
-        len(model['shapes']), total_v, total_i, model['materials'], len(groups)))
+        len(model['shapes']), total_v, total_i, model['materials'],
+        sum(len(m) for _, _, m in shapes_out)))
     print('bounds x %.2f..%.2f  y %.2f..%.2f  z %.2f..%.2f' % (
         lo[0], hi[0], lo[1], hi[1], lo[2], hi[2]))
     refs = texture_references(b)
@@ -296,11 +301,11 @@ def main():
         mtl = os.path.splitext(args[1])[0] + '.mtl'
         write_mtl(mtl, refs, tex_dir)
         print('textures: %s' % ', '.join(refs))
-    write_obj(args[1], groups, args[0].split('/')[-1], mtl and os.path.basename(mtl))
+    write_obj(args[1], shapes_out, args[0].split('/')[-1], mtl and os.path.basename(mtl))
     print('wrote', args[1])
     if '--preview' in sys.argv:
         out = sys.argv[sys.argv.index('--preview') + 1]
-        preview(out, groups[0][1], groups[0][2])
+        preview(out, shapes_out[0][1], shapes_out[0][2][0])
         print('wrote', out)
 
 
