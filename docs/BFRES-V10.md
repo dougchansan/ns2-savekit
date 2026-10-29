@@ -91,19 +91,36 @@ decoder must map them explicitly.
 index offset at 0x20, topology at 0x24, index format at 0x28 (1 = u16 here),
 index count at 0x2c (4,080), base vertex at 0x30, submesh count at 0x34.
 
-## The open question
+## GPU region and extraction (solved)
 
-Vertex and index data live in the file's **GPU region**; the doc says both
-offsets (`FVTX+0x48`, `mesh+0x20`) are relative to its start. The base is not yet
-pinned down for these files: the header's `MemoryPoolInfo` at 0xb0 → 0x168 does
-not yield a base that puts a 4,086-vertex × 36-byte run (147,096 bytes) inside the
-226,208-byte file without overlapping the name string at 0x7626. A scan for
-float32 position triples found only zeros at 4 KiB-aligned offsets, which suggests
-either the positions are not the first attribute or they are quantised (the
-format numbers above are consistent with non-float attributes).
+The GPU region is the **tail of the file**, and its size is the u32 at **0x16c**
+(0x168 holds a constant 0x24, which is what made an earlier read wrong):
 
-Next step is to resolve that base — decode the `MemoryPoolInfo` per
-`nn::gfx::MemoryPoolInfo`, or find the block by looking for the index buffer
-(4,080 u16 values whose max is below 4,086) and walking back from it. Once the
-base is known, the rest of the decoder (attributes → glTF accessors, FSHP → prims,
-skeleton, materials, BNTX → PNG) is mechanical.
+    gpu = len(file) - u32(0x16c)          # 226,208 - 0x2d000 = 0xA3A0
+
+For the accel ring that puts the vertex run at `0xA3A0 + 0x5580 = 0xF920`, with
+exactly 4,086 × 36 = 147,096 bytes to EOF — zero slack, so the base is certain.
+Indices are at `gpu + mesh[0x20]`, which is 0 for this file: 4,080 u16 values,
+max 1,511, a valid buffer.
+
+Two details that made this look wrong for a long time:
+
+* **The position is not at record offset 0.** The first eight bytes are packed
+  attributes; the ring's float3 positions start at offset **8**. Reading offset 0
+  gives `x = y = 0` and a single varying axis, which looks like index data.
+* **The offset varies per model.** The aerial sign (stride 32) has them at 0, not
+  8, so the extractor picks the offset whose three axes all span real geometry
+  rather than assuming one.
+
+`tools/bfres10.py` implements this: header → FMDL → FVTX/FSHP/ResMesh, GPU region,
+positions and indices, OBJ export plus a wireframe preview. Verified on two
+models:
+
+| model | vertices | stride | indices | bounds |
+| --- | --- | --- | --- | --- |
+| `CmnObj_AccelRing000` | 4,086 | 36 | 4,080 | x ±10.7, y ±11.2, z ±1.4 (a flat ring) |
+| `CmnObj_AerialSign009` | 3,624 | 32 | 3,684 | x ±25.2, y 0..9.8, z −1.3..0.3 (a wide sign) |
+
+Remaining for full glTF: normals/UVs (packed, need the `nn::gfx::AttributeFormat`
+mapping), materials (`FMAT`), skeleton, and multiple meshes per shape. Textures
+are a separate problem: they are `Ounce64` containers the toolkit cannot read.
