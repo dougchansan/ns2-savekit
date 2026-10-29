@@ -156,6 +156,13 @@ def decode(info, blocks, width, height):
         out = v[..., :3].astype(np.uint8)
         alpha = np.full(out.shape[:2] + (1,), 255, np.uint8)
         return np.concatenate([out, alpha], axis=2)
+    if name == 'R8':
+        g = blocks[:width * height].reshape(height, width)
+        return np.dstack([g, g, g, np.full_like(g, 255)])
+    if name == 'R8G8':
+        v = blocks[:width * height * 2].reshape(height, width, 2)
+        g = v[..., 0]
+        return np.dstack([g, g, g, np.full_like(g, 255)])
     if name == 'B8G8R8A8':
         v = blocks.reshape(height, width, 4)[..., [2, 1, 0, 3]]
         return v
