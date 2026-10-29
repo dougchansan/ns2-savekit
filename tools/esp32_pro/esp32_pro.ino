@@ -34,6 +34,9 @@
 #include <USB.h>
 #include <USBHID.h>
 #include <ArduinoOTA.h>
+#include "driver/uart.h"
+#include "driver/gpio.h"
+#include "esp_rom_sys.h"
 
 #include "wifi_secret.h"
 static const char *SSID = WIFI_SSID;
@@ -42,6 +45,7 @@ static const char *PASS = WIFI_PASS;
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
+struct FlipRes { bool heartbeat, baudOk, rpcOk; };
 
 static const u8 pro_report_desc[] = {
     0x05,0x01,0x15,0x00,0x09,0x04,0xA1,0x01,0x85,0x30,0x05,0x01,0x05,0x09,0x19,0x01,
@@ -450,8 +454,232 @@ static bool flag(const char *n) {
   String v = server.arg(n); return v == "1" || v == "true" || v == "on";
 }
 
+// --- Flipper Zero expansion-module RPC -----------------------------------
+// The WiFi devboard's ESP32-S2 is wired to the Flipper GPIO USART (Flipper
+// pin 13 TX -> ESP32 RX, pin 14 RX <- ESP32 TX). On the devboard those are
+// UART0's GPIO44(RX)/43(TX); we drive them from UART1 via the pin matrix so
+// Serial (UART0) is left alone, and /flipper/ping?tx=&rx= can probe others.
+// Protocol: expansion_protocol.h + Flipper RPC (protobuf, length-delimited).
+// Momentum's BadUSB app is name "Bad KB" (appid bad_kb), scripts in /ext/badusb.
+static HardwareSerial Flip(0);   // UART0: the pins physically wired to the Flipper
+static int flipTx = 43, flipRx = 44;
+
+enum { FF_HEARTBEAT = 1, FF_STATUS = 2, FF_BAUD = 3, FF_CONTROL = 4, FF_DATA = 5 };
+
+static int flipByte(uint32_t toMs) {
+  uint32_t t0 = millis();
+  while (!Flip.available()) { if (millis() - t0 > toMs) return -1; delay(0); }
+  return Flip.read();
+}
+
+static void flipSend(u8 type, const u8 *content, u8 clen) {
+  u8 buf[70]; u8 n = 0; buf[n++] = type;
+  for (u8 i = 0; i < clen; i++) buf[n++] = content[i];
+  u8 x = 0; for (u8 i = 0; i < n; i++) x ^= buf[i];
+  buf[n++] = x;
+  Flip.write(buf, n); Flip.flush();
+}
+
+// Read one frame into content[], returns frame type or -1 on timeout/error.
+static int flipRecv(u8 *content, u8 *clen, uint32_t toMs) {
+  int h = flipByte(toMs); if (h < 0) return -1;
+  u8 n = 0;
+  int need = (h == FF_HEARTBEAT) ? 0 : (h == FF_STATUS || h == FF_CONTROL) ? 1
+           : (h == FF_BAUD) ? 4 : (h == FF_DATA) ? -1 : 0;
+  if (need == -1) {               // DATA: first byte is the size
+    int sz = flipByte(toMs); if (sz < 0) return -1;
+    for (int i = 0; i < sz; i++) { int b = flipByte(toMs); if (b < 0) return -1; content[n++] = b; }
+  } else {
+    for (int i = 0; i < need; i++) { int b = flipByte(toMs); if (b < 0) return -1; content[n++] = b; }
+  }
+  int ck = flipByte(toMs); if (ck < 0) return -1;
+  u8 x = h; if (h == FF_DATA) x ^= n;        // size byte is part of the checksum
+  for (u8 i = 0; i < n; i++) x ^= content[i];
+  if ((u8)ck != x) return -1;
+  *clen = n; return h;
+}
+
+static void flipSendData(const u8 *data, u8 len) {
+  u8 c[65]; c[0] = len; for (u8 i = 0; i < len; i++) c[i + 1] = data[i];
+  flipSend(FF_DATA, c, len + 1);
+}
+
+// Read frames until one of type `want` arrives, skipping heartbeats.
+static bool flipWait(u8 want, u8 *content, u8 *clen, uint32_t toMs) {
+  uint32_t t0 = millis();
+  while (millis() - t0 < toMs) {
+    int t = flipRecv(content, clen, 60);
+    if (t == (int)want) return true;
+  }
+  return false;
+}
+
+static void flipDrain() { while (Flip.available()) Flip.read(); }
+
+// RPC command id: the Flipper matches responses by it, so each request needs a
+// fresh one (flipper2jb increments; command_id 0 confuses the sequencing).
+static uint32_t flipCmdId = 0;
+
+// Consume (and STATUS-ack) incoming frames for `ms`, keeping the UART in sync
+// while Bad KB loads. Replaces a blind delay that would leave responses unread.
+static void flipDrainMs(uint32_t ms) {
+  u8 c[72], cl; uint32_t t0 = millis();
+  while (millis() - t0 < ms) {
+    int t = flipRecv(c, &cl, 60);
+    if (t == FF_DATA) { u8 ok = 0; flipSend(FF_STATUS, &ok, 1); }
+  }
+}
+
+// Full handshake: wake -> heartbeat -> baud (9600, no switch) -> start RPC.
+// Retried as a unit; stale bytes between sessions would otherwise misalign
+// framing, and the Flipper needs a >Tto (250 ms) idle gap to reset.
+static bool flipBegun = false;
+
+// Wake the Flipper exactly like flipper2jb's tcp_uart_bridge: a 100 us GPIO low
+// pulse on TX (pulls the Flipper's RX low), then hand the pad straight back to
+// the UART. The RX driver stays alive, and NO data bytes are sent -- the 0x00
+// "wake bytes" the old code used poisoned the session and broke baud/start.
+static void flipSignalPresence(int tx, int rx) {
+  uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(50));
+  gpio_reset_pin((gpio_num_t)tx);
+  gpio_set_direction((gpio_num_t)tx, GPIO_MODE_OUTPUT);
+  gpio_set_level((gpio_num_t)tx, 0);
+  esp_rom_delay_us(100);
+  gpio_set_level((gpio_num_t)tx, 1);
+  uart_set_pin(UART_NUM_0, tx, rx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+}
+
+static bool flipOpen(FlipRes *r, int tx, int rx) {
+  r->heartbeat = r->baudOk = r->rpcOk = false;
+  u8 c[72], cl;
+  if (!flipBegun) { Flip.begin(9600, SERIAL_8N1, rx, tx); flipBegun = true; delay(10); }
+  else { Flip.updateBaudRate(9600); }
+  for (int session = 0; session < 6; session++) {
+    flipDrain();
+    flipSignalPresence(tx, rx);
+    if (!flipWait(FF_HEARTBEAT, c, &cl, 400)) { delay(260); continue; }   // Tto ~250 ms
+    r->heartbeat = true;
+    uint32_t baud = 9600; u8 p[4]; memcpy(p, &baud, 4);                   // stay at 9600 (no switch)
+    flipSend(FF_BAUD, p, 4);
+    if (!(flipWait(FF_STATUS, c, &cl, 500) && c[0] == 0)) { delay(260); continue; }
+    r->baudOk = true;
+    u8 start = 0x00; flipSend(FF_CONTROL, &start, 1);                     // start RPC
+    if (flipWait(FF_STATUS, c, &cl, 500) && c[0] == 0) { r->rpcOk = true; return true; }
+    delay(260);
+  }
+  return false;
+}
+
+static void flipClose() {
+  u8 stop = 0x01; flipSend(FF_CONTROL, &stop, 1);
+  u8 c[72], cl; flipWait(FF_STATUS, c, &cl, 200);
+  delay(300);                 // > Tto so the Flipper resets to detection; UART stays up
+}
+
+// Send one RPC Main message (length-delimited), chunked into DATA frames,
+// ack each returned DATA, and drain the response for a short window.
+static void flipRpc(const u8 *main, uint16_t mlen) {
+  static u8 stream[1600]; uint16_t n = 0; uint32_t v = mlen;
+  while (v >= 0x80) { stream[n++] = (v & 0x7F) | 0x80; v >>= 7; } stream[n++] = v;
+  memcpy(stream + n, main, mlen); n += mlen;
+  uint16_t off = 0; u8 c[72], cl;
+  while (off < n) {
+    u8 chunk = (n - off > 64) ? 64 : (n - off);
+    flipSendData(stream + off, chunk);
+    flipWait(FF_STATUS, c, &cl, 400);      // STATUS ack (skip heartbeats)
+    off += chunk;
+  }
+  uint32_t t0 = millis();
+  while (millis() - t0 < 300) {
+    int t = flipRecv(c, &cl, 60);
+    if (t == FF_DATA) { u8 ok = 0; flipSend(FF_STATUS, &ok, 1); }
+  }
+}
+
+// Minimal protobuf writers (proto3, wire types 0 varint / 2 length-delimited).
+static void pbVar(u8 *&p, uint32_t v) { while (v >= 0x80) { *p++ = (v & 0x7F) | 0x80; v >>= 7; } *p++ = v; }
+static void pbTag(u8 *&p, uint32_t f, uint32_t w) { pbVar(p, (f << 3) | w); }
+static void pbU(u8 *&p, uint32_t f, uint32_t v) { pbTag(p, f, 0); pbVar(p, v); }
+static void pbBytes(u8 *&p, uint32_t f, const u8 *d, uint32_t n) { pbTag(p, f, 2); pbVar(p, n); memcpy(p, d, n); p += n; }
+static void pbStr(u8 *&p, uint32_t f, const char *s) { pbBytes(p, f, (const u8 *)s, strlen(s)); }
+
+// Main{ command_id=1, storage_write_request=11: Write{ path=1, file=2: File{ data=4 } } }
+static uint16_t flipBuildWrite(u8 *out, const char *path, const u8 *data, uint16_t dlen) {
+  static u8 file[1400]; u8 *fp = file; pbBytes(fp, 4, data, dlen); uint16_t flen = fp - file;
+  static u8 wr[1500]; u8 *wp = wr; pbStr(wp, 1, path);
+  pbTag(wp, 2, 2); pbVar(wp, flen); memcpy(wp, file, flen); wp += flen; uint16_t wlen = wp - wr;
+  u8 *o = out; pbU(o, 1, ++flipCmdId); pbTag(o, 11, 2); pbVar(o, wlen); memcpy(o, wr, wlen); o += wlen;
+  return o - out;
+}
+// Main{ command_id=1, app_start_request=16: Start{ name=1, args=2 } }
+static uint16_t flipBuildStart(u8 *out, const char *name, const char *args) {
+  static u8 sr[260]; u8 *sp = sr; pbStr(sp, 1, name); if (args && *args) pbStr(sp, 2, args);
+  uint16_t slen = sp - sr;
+  u8 *o = out; pbU(o, 1, ++flipCmdId); pbTag(o, 16, 2); pbVar(o, slen); memcpy(o, sr, slen); o += slen;
+  return o - out;
+}
+// Main{ command_id=1, gui_send_input_event_request=23: Input{ key=1, type=2 } }
+static uint16_t flipBuildInput(u8 *out, uint32_t key, uint32_t type) {
+  static u8 ir[16]; u8 *ip = ir; pbU(ip, 1, key); pbU(ip, 2, type); uint16_t ilen = ip - ir;
+  u8 *o = out; pbU(o, 1, ++flipCmdId); pbTag(o, 23, 2); pbVar(o, ilen); memcpy(o, ir, ilen); o += ilen;
+  return o - out;
+}
+
+static u8 flipScript[1200];
+static uint16_t flipScriptLen = 0;
+
+// --- Raw RPC bridge -------------------------------------------------------
+// TCP:8080 <-> expansion UART, so the proven flipper2jb Mac tool can drive the
+// Flipper THROUGH this board while the ESP32 stays a Pro Controller. Mirrors
+// flipper2jb/firmware/tcp_uart_bridge: pipe raw RPC bytes both ways, wrapping
+// them in DATA frames, and keep the session alive with heartbeats. The Mac
+// side (flipper2jb) owns the RPC (command ids, response waiting, upload+run).
+WiFiServer flipBridge(8080);
+WiFiClient flipCli;
+static bool flipBridgeUp = false;
+static uint32_t flipBridgeHb = 0;
+static uint32_t brOpens = 0, brFails = 0, brTcpRx = 0, brTxFrames = 0, brRxData = 0, brHb = 0;
+
+static void flipBridgeTick() {
+  if (flipCli && flipCli.connected()) {
+    u8 c[72], cl;
+    bool activity = false;
+    // TCP -> UART: RPC request bytes become DATA frames.
+    while (flipCli.available()) {
+      u8 buf[64]; int n = flipCli.read(buf, 64);
+      if (n <= 0) break;
+      flipSendData(buf, (u8)n); brTcpRx += n; brTxFrames++;
+      flipWait(FF_STATUS, c, &cl, 300);
+      activity = true;
+    }
+    // UART -> TCP: DATA frames become RPC response bytes (ack each, drop heartbeats).
+    while (Flip.available()) {
+      int t = flipRecv(c, &cl, 40);
+      if (t == FF_DATA) { flipCli.write(c, cl); brRxData++; u8 ok = 0; flipSend(FF_STATUS, &ok, 1); activity = true; }
+      else if (t < 0) break;
+    }
+    if (activity) flipBridgeHb = millis();
+    else if (millis() - flipBridgeHb > 120) {   // idle heartbeat (< Tto 250 ms)
+      flipSend(FF_HEARTBEAT, nullptr, 0); brHb++;
+      flipWait(FF_HEARTBEAT, c, &cl, 60);
+      flipBridgeHb = millis();
+    }
+    return;
+  }
+  // No client, or it just closed: tear down any open session, accept a new one.
+  if (flipBridgeUp) { flipClose(); flipBridgeUp = false; }
+  if (flipCli) flipCli.stop();
+  WiFiClient nc = flipBridge.accept();
+  if (nc) {
+    flipCli = nc; flipCli.setNoDelay(true);
+    FlipRes r;
+    if (flipOpen(&r, flipTx, flipRx)) { flipBridgeUp = true; flipBridgeHb = millis(); brOpens++; }
+    else { flipCli.stop(); brFails++; }
+  }
+}
+
 void setup() {
-  Serial.begin(115200);
+  // Serial debug removed: UART0 pins 43/44 are the Flipper link (see above).
   rebuildInput();
   USB.manufacturerName("Nintendo Co., Ltd.");
   USB.productName("Pro Controller");
@@ -530,7 +758,115 @@ void setup() {
     server.send(200, "application/json", String("{\"ok\":true,\"mask\":") + (uint32_t)buttons + "}");
   });
 
+  // --- Flipper endpoints. The pad keeps streaming except during the ~1 s
+  // exchange, which blocks loop(); the console does not drop the pad for it.
+  // Raw diagnostic: wake, then hex-dump whatever arrives on rx within 600 ms.
+  server.on("/flipper/raw", [] {
+    int tx = server.hasArg("tx") ? server.arg("tx").toInt() : flipTx;
+    int rx = server.hasArg("rx") ? server.arg("rx").toInt() : flipRx;
+    long baud = server.hasArg("baud") ? server.arg("baud").toInt() : 9600;
+    Flip.end();
+    pinMode(tx, OUTPUT); digitalWrite(tx, LOW); delay(15);   // GPIO wake blip
+    Flip.begin(baud, SERIAL_8N1, rx, tx);
+    for (int i = 0; i < 8; i++) Flip.write((u8)0x00);         // clean start-bit edges
+    uint32_t bb = 9600; u8 bp[6]; bp[0] = FF_BAUD; memcpy(bp + 1, &bb, 4);
+    u8 x = 0; for (int i = 0; i < 5; i++) x ^= bp[i]; bp[5] = x;
+    Flip.write(bp, 6);                                        // a valid baud frame
+    Flip.flush();
+    String hex; int count = 0; uint32_t t0 = millis();
+    while (millis() - t0 < 600) {
+      if (Flip.available()) {
+        int b = Flip.read(); count++;
+        char h[4]; snprintf(h, sizeof(h), "%02x ", b & 0xFF); hex += h;
+        if (count >= 64) break;
+      }
+    }
+    Flip.end();
+    server.send(200, "application/json",
+      String("{\"tx\":") + tx + ",\"rx\":" + rx + ",\"baud\":" + baud +
+      ",\"count\":" + count + ",\"hex\":\"" + hex + "\"}");
+  });
+  server.on("/bridge", [] {
+    server.send(200, "application/json",
+      String("{\"up\":") + (flipBridgeUp ? "true" : "false") +
+      ",\"client\":" + ((flipCli && flipCli.connected()) ? "true" : "false") +
+      ",\"opens\":" + brOpens + ",\"fails\":" + brFails +
+      ",\"tcpRx\":" + brTcpRx + ",\"txFrames\":" + brTxFrames +
+      ",\"rxData\":" + brRxData + ",\"hb\":" + brHb + "}");
+  });
+  server.on("/flipper/ping", [] {
+    int tx = server.hasArg("tx") ? server.arg("tx").toInt() : flipTx;
+    int rx = server.hasArg("rx") ? server.arg("rx").toInt() : flipRx;
+    FlipRes r; bool ok = flipOpen(&r, tx, rx);
+    if (ok) { flipTx = tx; flipRx = rx; }
+    flipClose();
+    server.send(200, "application/json",
+      String("{\"ok\":") + (ok ? "true" : "false") +
+      ",\"tx\":" + tx + ",\"rx\":" + rx +
+      ",\"heartbeat\":" + (r.heartbeat ? "true" : "false") +
+      ",\"baudOk\":" + (r.baudOk ? "true" : "false") +
+      ",\"rpcOk\":" + (r.rpcOk ? "true" : "false") + "}");
+  });
+  // POST a ready BadUSB script (raw text) to stage it.
+  server.on("/flipper/script", HTTP_POST, [] {
+    String b = server.arg("plain");
+    flipScriptLen = b.length() > sizeof(flipScript) ? sizeof(flipScript) : b.length();
+    memcpy(flipScript, b.c_str(), flipScriptLen);
+    server.send(200, "application/json", String("{\"ok\":true,\"bytes\":") + flipScriptLen + "}");
+  });
+  // POST plain text to type: build a BadUSB script (one STRING+ENTER per line).
+  server.on("/flipper/type", HTTP_POST, [] {
+    String t = server.arg("plain");
+    u8 *p = flipScript; const char *hdr = "DELAY 500\n";
+    memcpy(p, hdr, strlen(hdr)); p += strlen(hdr);
+    int i = 0, n = t.length();
+    while (i < n && (p - flipScript) < (int)sizeof(flipScript) - 80) {
+      int e = t.indexOf('\n', i); if (e < 0) e = n;
+      String line = t.substring(i, e);
+      String out = String("STRING ") + line + "\nENTER\n";
+      int ol = out.length(); if ((p - flipScript) + ol > (int)sizeof(flipScript)) break;
+      memcpy(p, out.c_str(), ol); p += ol;
+      i = e + 1;
+    }
+    flipScriptLen = p - flipScript;
+    server.send(200, "application/json", String("{\"ok\":true,\"bytes\":") + flipScriptLen + "}");
+  });
+  // Write the staged script to the SD card and launch BadUSB on it.
+  server.on("/flipper/run", [] {
+    String path = server.hasArg("path") ? server.arg("path") : String("/ext/badusb/ns2.txt");
+    String name = server.hasArg("name") ? server.arg("name") : String("Bad KB");
+    bool press = flag("ok");
+    FlipRes r;
+    if (!flipOpen(&r, flipTx, flipRx)) {
+      flipClose();
+      server.send(200, "application/json", "{\"ok\":false,\"stage\":\"open\"}");
+      return;
+    }
+    static u8 mb[1600];
+    uint16_t ml = flipBuildWrite(mb, path.c_str(), flipScript, flipScriptLen);
+    flipRpc(mb, ml);
+    ml = flipBuildStart(mb, name.c_str(), path.c_str());
+    flipRpc(mb, ml);
+    if (press) {
+      // Bad KB needs ~1-2 s to init USB HID before its view takes input, so
+      // spray the OK press across a window; OK is ignored once it is running.
+      delay(1500);
+      // Match flipper2jb exactly: wait ~2 s for Bad KB to load (draining
+      // responses so the UART stays in sync), then one OK press as
+      // PRESS -> SHORT -> RELEASE (the Flipper resets the sequence on RELEASE,
+      // so SHORT must come before it).
+      flipDrainMs(2000);
+      ml = flipBuildInput(mb, 4 /*OK*/, 0 /*PRESS*/);   flipRpc(mb, ml);
+      ml = flipBuildInput(mb, 4 /*OK*/, 2 /*SHORT*/);   flipRpc(mb, ml);
+      ml = flipBuildInput(mb, 4 /*OK*/, 1 /*RELEASE*/); flipRpc(mb, ml);
+    }
+    flipClose();
+    server.send(200, "application/json",
+      String("{\"ok\":true,\"wrote\":") + flipScriptLen + ",\"path\":\"" + path + "\",\"app\":\"" + name + "\"}");
+  });
+
   server.begin();
+  flipBridge.begin();
   ArduinoOTA.setHostname("esp32-hid");
   ArduinoOTA.begin();
 }
@@ -538,5 +874,6 @@ void setup() {
 void loop() {
   server.handleClient();
   ArduinoOTA.handle();
-  streamInput();
+  flipBridgeTick();
+  if (!(flipCli && flipCli.connected())) streamInput();  // pad pauses during a bridge session
 }
