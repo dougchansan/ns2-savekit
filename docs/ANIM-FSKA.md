@@ -257,3 +257,38 @@ from these quantised keys to real values still has one unknown — most likely t
 and settling it needs a reference that samples the same curves, or a capture from
 the running game. That is the state of the work; nothing further can be concluded
 from the byte patterns alone without risking invented poses.
+
+### Fifth pass: the baked bit was misread, and the base anchor
+
+The FSKA flag's *baked* bit is bit 0, and `0x1100` has it **clear** — so these
+clips are **keyed, not baked**, and `FSKA+0x48` is not a per-frame table. That
+removes the earlier "baked table" hypothesis.
+
+The base values (+0x10) are 10 floats per bone, and with rotation mode quaternion
+the layout is `scale(3) · rotation(4) · translation(3)`. Using the translation
+triple as the frame-0 anchor (`scale = (base − add) / key0`) and then checking
+`delta ≈ key_range × scale`:
+
+* all channels: **9 of 93 consistent**
+* translation channels only: **4 of 33 consistent**
+
+A pattern did show up in the failures: for several translation channels the curve's
+`delta` equals the base value itself (`Clavicle_L` x: 0.041 vs 0.041, y: 0.191 vs
+0.191; `Arm_1_L` x: 0.145 vs 0.146). That is not what "delta = range" predicts, so
+either the delta field has a different meaning in 10.2, or the base I am reading is
+not the frame-0 pose.
+
+## On capturing from the running game
+
+A capture would settle this immediately, but the two kinds are very different:
+
+* **Pixels** — I can launch MKW (the pad/OCR cycle does it) and grab HDMI frames.
+  That gives images, not transforms: no frame tells us a bone's matrix.
+* **Memory** — the values we need (evaluated bone transforms at a known frame). The
+  ns2jb session gives a promoted `fsp-srv` root, i.e. **file-system** access as
+  SmileBASIC. It does not give read access to another process's memory, and no
+  service we have exposes MKW's heap. So there is no capture path to the numbers.
+
+That leaves a reference implementation (the wiki's own Tools section says "(none)"
+for BFRES) or a memory primitive we do not have. A frame would only be useful later,
+as a visual check on a renderer once skinning and animation exist.
