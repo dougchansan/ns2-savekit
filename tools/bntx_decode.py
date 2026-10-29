@@ -135,18 +135,11 @@ def decode(info, blocks, width, height):
     raise SystemExit('unsupported channel ' + name)
 
 
-def main():
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    if len(args) < 2:
-        raise SystemExit(__doc__)
-    mip = int(sys.argv[sys.argv.index('--mip') + 1]) if '--mip' in sys.argv else 0
-    b = open(args[0], 'rb').read()
+def decode_texture(b, mip=0):
+    """Decode one mip of a BNTX (Ounc) file from bytes. Returns (info, rgba)."""
     brti = u32(b, u32(b, 0x28))
     info = describe(b, brti)
     info['name'] = texture_name(b, info['name_ptr'])
-    print('%s  %dx%d mips %d  %s/%s  size %d' % (
-        info['name'], info['width'], info['height'], info['mips'],
-        info['channel'], info['type'], info['size']))
     mip_ptr = u64(b, brti + 0x2a0 + mip * 8)
     width = max(1, info['width'] >> mip)
     height = max(1, info['height'] >> mip)
@@ -155,9 +148,21 @@ def main():
     raw = np.frombuffer(b[mip_ptr:mip_ptr + info['size']], dtype=np.uint8)
     linear = deswizzle(raw, row_bytes, rows)
     blocks = np.frombuffer(linear.tobytes(), dtype=np.uint8)
-    rgba = decode(info, blocks, width, height)
+    return info, decode(info, blocks, width, height)
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    if len(args) < 2:
+        raise SystemExit(__doc__)
+    mip = int(sys.argv[sys.argv.index('--mip') + 1]) if '--mip' in sys.argv else 0
+    b = open(args[0], 'rb').read()
+    info, rgba = decode_texture(b, mip)
+    print('%s  %dx%d mips %d  %s/%s  size %d' % (
+        info['name'], info['width'] >> mip, info['height'] >> mip, info['mips'],
+        info['channel'], info['type'], info['size']))
     Image.fromarray(rgba, 'RGBA').save(args[1])
-    print('wrote', args[1], '%dx%d' % (width, height))
+    print('wrote', args[1], '%dx%d' % (rgba.shape[1], rgba.shape[0]))
 
 
 if __name__ == '__main__':
