@@ -74,6 +74,27 @@ type 2 (s8 keys), curve type 0 (cubic), and `0x4006` = key type 1 (s16 keys). Fr
 bytes for a curve are exactly `[0, 19, 30]` / `[0, 4, 8, 8, 12, 18, 27, 30]`, so the
 frame-type decoding is confirmed.
 
+## Additional evidence (2026-10-29, second pass)
+
+Syroot's `AnimCurve` documentation settles the semantics: **value = key × Scale +
+Offset**, and **Delta is the range** (lowest to highest key value), not end − start.
+With that:
+
+* Reading the key arrays under two packings and solving `Scale = Delta / key-range`
+  for all 105 curves of `MBikeBackL` gives **no consistent scale**: the s8×4
+  (cubic) reading spreads from −0.018 to +0.013 (median 1.9e-4), and the f32 linear
+  reading is off by orders of magnitude (implied scale in the hundreds). So neither
+  packing is right, or the key array is not what `+0x08` points at.
+* The field at `+0x20`, which the layout calls **Scale**, reads 0.0 on every one of
+  the 105 curves. A scale of 0 would collapse every value to the offset, so either
+  g3d2 stores 0 to mean "1" (still cannot explain ±127 s8 keys becoming radians) or
+  the curve layout has one more field than the reference and everything from +0x20
+  on is shifted.
+* `FSKA+0x48` (called "baked size") is **15,960 bytes** for `MBikeBackL` — a large
+  payload for 105 curves of a few keys each. Baked curves (curve types 2/5/7 in the
+  reference) store per-frame values in a separate table; if these clips are baked,
+  the key arrays are indices into that table and the values must be read from it.
+
 ## Open questions (what blocks sampling)
 
 1. **Where the scale lives.** The reference puts `scale` at +0x20, `offset` at
