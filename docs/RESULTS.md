@@ -1493,3 +1493,56 @@ failing run (`P9kh82`) reached **exactly that state** (`markerSelected: true`,
 So the canary qualification does still happen; what fails now is either the canary
 miss (`markerSelected false` at 16:12) or losing the RPC connection after it. Those
 are different problems, and only the first is a grooming race.
+
+## 2026-10-29 16:45: the repeat that fails, and the fingerbot stops reaching
+
+### The failure after qualification is the *repeat*, not the canary
+
+The one boot in this stretch that got past the canary qualified properly
+(`markerSelected: true`) and then failed with a different error:
+
+```
+Error: Repeated overwrite missed the canary; retain resources for recovery
+  at probe-reserved-gap.cjs:650
+CANARY offset=0x2370 type=null changed=["canary"] margin=2536 window=true
+```
+
+The code explains it. Qualification is:
+
+```js
+report.markerSelected = canaryChanged && positive.canaryType === 0 &&
+  changedPaths.every(n => n === 'canary') && hasWindow(positive);
+```
+
+so **`canaryType === 0` is required** - the opposite of what the reverted change assumed
+(see the correction above; this is the same evidence from the other direction). Then,
+because it qualified, the acquisition repeats the positive wave to prove the landing
+reproduces:
+
+```js
+const repeated = await retryWave('positive');       // restarts at the base offset
+if (!repeated.triggerAborted && !report.markerReproduced) throw ...
+```
+
+That repeat started the sweep from the base offset again. When the base had no
+receive-order window on the second pass, it walked on to 0x2370, landed on an
+unowned canary (`type=null`) and failed. The repeat is now **pinned to the offset
+that qualified** (`retryWave('positive', qualifiedOffset)`), so it re-tests the same
+landing instead of searching for a new one. Committed, not yet proven.
+
+### The fingerbot no longer reaches the power button
+
+The console is now wedged in SmileBASIC's RPC loop (`RPC RUNNING`) and the
+fingerbot cannot power-cycle it:
+
+| probe | observation |
+| --- | --- |
+| three holds of 16 s | console still answers ping, HDMI still shows the wedged screen |
+| `/status` | `dp102: 95` (down travel), `dp105: 95` (rest), `dp103: 0` (press sustain) |
+| `/up` then status | `/up` answers `dp1: false`, the next `/status` reports `dp1: true` |
+| 1 s press vs no press | two captures with **identical sha256** |
+
+Two presses leaving the frame byte-identical is the same signature as the earlier
+"arm travel" fault (`RESULTS.md`, 2026-10-28: at `dp102` 85 every press was a silent
+no-op). Power control therefore needs the arm reseated physically; no host-side
+command can recover the console until then.
