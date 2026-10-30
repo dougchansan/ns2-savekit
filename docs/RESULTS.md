@@ -1032,3 +1032,60 @@ Offline tests (`lua tests/test_payload_lua.lua`, 13/13) drive the launcher again
 stubbed engine and filesystem, and run `nso-verify.lua` against the demo's real
 `main`: structure accepted, `contentsVerified = false` (no LZ4 in the sandbox), and
 the launcher's dialog says `contents not hashed`.
+
+## 2026-10-29 later still: the launcher entry is the PLAYMENU card, and names have rules
+
+Done on the console in direct mode, with no exploit session: F12 opens TOPMENU,
+`Projects` (up twice, A) opens the **PLAYMENU**, which is the list a user picks a
+program from. Frame `2026-10-29-playmenu-card.png`.
+
+```
+PLAYMENU   [Local] Samples Published Works Public Key
+  card: gear icon  [WORKSPACE]        (title)
+        [WORKSPACE]                   (file name)
+        2026.10.22 14:52:51  size 20275
+  right: Title [WORKSPACE] / File Name [WORKSPACE] / User Name / Details / Tag
+  footer: A Hold for Submenu   - Display Files   B Back   A/+ Run
+```
+
+So the thing that can honestly be renamed is **this card**: its Title, its File
+Name and its geometry come from the project's save metadata (the `META` name and
+its 40x69 icon), and it is what "launching from the console's own menu" means for
+this chain. It is still not the HOME tile.
+
+### Filenames: no spaces, at least 16 characters
+
+| typed | console | evidence |
+| --- | --- | --- |
+| `SAVE "TXT:HOMEBREW"` | `OK`, and `FILES` then lists `TXT:HOMEBREW` | `2026-10-29-files-after-save.png` |
+| `SAVE "TXT:HOMEBREW LAUNCHER"` | **`Illegal format (SAVE:1)`** | `2026-10-29-savename-illegal.png` |
+| `SAVE "TXT:HOMEBREWLAUNCHER"` | accepted (16 chars) | the save dialog showed that File Name |
+
+So `Homebrew Launcher` cannot be a filename: spaces are rejected outright. A
+single-token name of 16 characters is accepted.
+
+Two further facts from the same measurements:
+
+- saving under a new filename does **not** change the project name: the bottom-left
+  label stayed `[WORKSPACE]` and the PLAYMENU still showed one card, `[WORKSPACE]`.
+  Files and projects are different things, and only the project card is pickable.
+- the PLAYMENU's `Tag` field is empty, consistent with `tag.dat` being zeros.
+
+### Negative result: the rename submenu did not open
+
+`A Hold for Submenu` is advertised in the footer. Two pad holds (1.4 s and 2.0 s,
+`/pro?a=1&raw=1` then release) left the screen unchanged. It is not known whether
+this is the pad's A not reaching a "hold" handler, or the submenu needing a
+different button; what is known is that the rename was **not** exercised from the
+UI. The rename path that remains is the one this project is built around: write the
+`META` name (and icon) into the save and read the card afterwards.
+
+### The Flipper bridge works; Bad KB typing does not reach the console
+
+`GET /flipper/ping` on the pro firmware answered
+`{"heartbeat":true,"baudOk":true,"rpcOk":true}`, and `/flipper/type` +
+`/flipper/run` staged and started a Bad KB script twice (`wrote 10`, `app: Bad KB`).
+Nothing was typed on either attempt (12 s settle on the second). So the UART side
+of that bridge is healthy and the Flipper's USB is not in the console's USB path in
+this rig, which leaves the ESP32 keyboard build as the only typing channel - and it
+requires an OTA re-enumeration after SmileBASIC has already launched.
