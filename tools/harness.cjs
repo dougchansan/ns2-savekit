@@ -157,6 +157,11 @@ async function ota(bin, expectFw) {
   log(`OTA ${path.basename(bin)} -> ${expectFw}`);
   const before = await padStatus();
   if (before.fw === expectFw) { log(`already ${expectFw}`); return; }
+  // espota binds a UDP port for the board's answer. A previous upload that has not
+  // exited yet makes the next one fail with "Listen Failed: Address already in use",
+  // which reads like a board problem and is not.
+  try { execFileSync('pkill', ['-f', 'espota.py'], {timeout: 5000}); } catch { /* none */ }
+  await sleep(500);
   try {
     execFileSync('python3', [ESPOTA, '-i', '192.168.50.215', '-p', '3232', '-f', bin],
       {encoding: 'utf8', timeout: 300000, stdio: ['ignore', 'pipe', 'pipe']});
