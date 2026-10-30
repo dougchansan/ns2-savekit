@@ -19,6 +19,13 @@ Seedsow Lua Editor -- reference save and format documentation, NOT bundled.
     tools/indexed_save.py, with the index field order corrected and relocation
     applied on write.
 
+titledb -- title names, fetched at run time, NOT bundled.
+    https://github.com/blawar/titledb
+    By Blake Warner. Licensed MIT (Copyright (c) 2019 Blake Warner).
+    tools/lib/titles.cjs downloads US.en.json once and stores the compact
+    id -> name map in config/titledb-cache.json, which is gitignored. Only title
+    names and ids are used: no game code, art, keys or save data.
+
 Artemis engine -- Valve's engine, used by the target games.
     No game code, assets, keys or save data are included in this repository.
     No affiliation with or endorsement by the engine's authors or the games'

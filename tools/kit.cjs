@@ -26,6 +26,7 @@ try {
 
 const TOOLS = __dirname;
 const REPO = path.resolve(TOOLS, '..');
+let namesNoted = false;
 const NOTICE = [
   'Writes are the only dangerous operation and they are fenced: disposable titles',
   'only, a backup is required, existing files are replaced only when the live bytes',
@@ -166,11 +167,23 @@ async function titleRows(session) {
     return [];
   }
   const ids = [...result.out.matchAll(/0x([0-9a-f]{16})/g)].map(match => match[1]);
-  await titles.refresh();
+  const refreshed = await titles.refresh();
   if (!titles.available()) {
     console.log('note: no title names available (titledb could not be fetched and');
     console.log('config/titles.json has no names for these ids) - showing ids only.');
     console.log('Connect once with network access, or add names to config/titles.json.');
+  }
+  // A partial list looks like a bug unless the gap is named. Say it once; this
+  // runs every time the title list is rebuilt.
+  const unnamed = titles.unnamed(ids);
+  if (unnamed.length && !namesNoted) {
+    namesNoted = true;
+    console.log(`\nnote: ${unnamed.length} of ${ids.length} titles ` +
+      `${unnamed.length === 1 ? 'has' : 'have'} no name - demos/trials and some`);
+    console.log('new releases are not in titledb.');
+    if (!refreshed) console.log('(titledb could not be fetched - connect once with network access for names)');
+    console.log('add them to config/titles.local.json (keep any existing entries):');
+    console.log('  ' + titles.namesStub(unnamed));
   }
   return ids.map(id => ({
     id,

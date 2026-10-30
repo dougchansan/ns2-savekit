@@ -1,16 +1,20 @@
 'use strict';
-// Title id -> game name, from the community titledb, cached locally.
-// The cache is fetched once (US.en.json) and reused offline; if the fetch fails
-// the toolkit still works, it just shows the ids.
+// Title id -> game name, from the community titledb.
+//
+// One US.en.json download fills config/titledb-cache.json (~1.4 MB for 29k
+// names); the cache is then reused offline for a week. Upstream has no smaller
+// name file - this is a 90 MB JSON document (~26 MB over the wire) - so the
+// first run needs network access for full coverage. Titles titledb cannot name
+// (demos/trials, some new releases) fall back to config/titles.local.json;
+// anything still unknown is shown as an id and kit/inventory print a stub.
 const fs = require('node:fs');
 const path = require('node:path');
 
 const CACHE = path.join(__dirname, '..', '..', 'config', 'titledb-cache.json');
-const URLS = [
-  'https://raw.githubusercontent.com/blawar/titledb/master/US.en.json',
-  // mirror, for networks where raw.githubusercontent is blocked
-  'https://cdn.jsdelivr.net/gh/blawar/titledb@master/US.en.json',
-];
+const URL = 'https://raw.githubusercontent.com/blawar/titledb/master/US.en.json';
+// The old 20 s deadline aborted mid-download on anything slower than ~10 Mbit/s,
+// which then looked exactly like "titledb has no name for this title".
+const FETCH_TIMEOUT_MS = Number(process.env.NS2_TITLEDB_TIMEOUT_MS) || 300000;
 
 let map = null;
 
@@ -23,17 +27,19 @@ function load() {
   return map;
 }
 
-// The cache is good for a week; only the first run (or a stale cache) fetches,
-// so listing titles does not touch the network again.
+// The cache is good for a week; only the first run (or a stale cache) fetches.
+// Returns false when the fetch failed; a cache that already exists is still
+// used, so an offline run keeps the names from the last successful fetch.
 async function refresh(maxAgeMs = 7 * 24 * 3600 * 1000) {
   try {
     const stat = fs.statSync(CACHE);
     if (Date.now() - stat.mtimeMs < maxAgeMs) return true;
   } catch { /* no cache: fetch */ }
-  for (const url of URLS) {
+  console.error('titledb: fetching title names (first run or a stale cache; ' +
+    '~26 MB over the wire)');
   try {
-    const response = await fetch(url, {signal: AbortSignal.timeout(20000)});
-    if (!response.ok) continue;
+    const response = await fetch(URL, {signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)});
+    if (!response.ok) return false;
     const data = await response.json();
     const compact = {};
     for (const [key, entry] of Object.entries(data)) {
@@ -44,16 +50,14 @@ async function refresh(maxAgeMs = 7 * 24 * 3600 * 1000) {
         compact[id.toLowerCase()] = name;
       }
     }
-    if (Object.keys(compact).length < 100) continue;
+    if (Object.keys(compact).length < 100) return false;
     fs.mkdirSync(path.dirname(CACHE), {recursive: true});
     fs.writeFileSync(CACHE, JSON.stringify(compact));
     map = compact;
     return true;
   } catch {
-    continue;
+    return false;
   }
-  }
-  return false;
 }
 
 // True when at least one title can be named; the kit warns when it cannot.
@@ -95,6 +99,20 @@ function name(id) {
   return localNames()[key] || load()[key] || null;
 }
 
+// Ids no layer can name. Demos/trials have no app id in titledb, and new or
+// eShop-only releases can be absent; callers print these so a partial list is
+// not mistaken for a broken one.
+function unnamed(ids) {
+  return [...new Set(ids.map(String))].filter(id => !name(id));
+}
+
+// A copy-paste skeleton for config/titles.local.json covering those ids.
+function namesStub(ids) {
+  const names = {};
+  for (const id of ids) names[String(id).toLowerCase()] = '<name>';
+  return JSON.stringify({names});
+}
+
 function label(id) {
   const found = name(id);
   return found ? found + '  (' + id + ')' : id;
@@ -117,4 +135,4 @@ function slug(id) {
   return clean || String(id).toLowerCase();
 }
 
-module.exports = {refresh, name, label, slug, available, cachePath: CACHE};
+module.exports = {refresh, name, label, slug, available, unnamed, namesStub, cachePath: CACHE};

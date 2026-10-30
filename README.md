@@ -96,14 +96,22 @@ for normal use.
 
 ## Quick start
 
-Two things are needed before anything else: an exploit session held open, and
-this checkout. The exploit is not part of this repository - get it from
-[ns2jb](https://gitlab.com/kurumuz/ns2jb) and keep it in its own directory.
+Three things are needed before anything else: a **patched** ns2jb checkout, an
+exploit session held open, and this checkout. The exploit is not part of this
+repository - get it from [ns2jb](https://gitlab.com/kurumuz/ns2jb) and keep it in
+its own directory.
 
 ```sh
-# 1. Start the exploit and leave it running. It prints the run folder.
+# 0. From this checkout: patch the engine before the first run.
+#    Without this, list-apps fails with EEXIST (…-ncm-system-programs.bin) and
+#    the account lookup fails with "ListAllUsers: transport 0xf601".
+#    See docs/PATCHED-ENGINE.md.
+sh patches/apply.sh /path/to/ns2jb
+
+# 1. In the ns2jb checkout: start the exploit and leave it running.
 #    <LOCAL RPC IP> is the local IP of THIS computer, not the console: the console
 #    dials back to it, so it must be an address the Switch can reach.
+cd /path/to/ns2jb
 node run.cjs --rpc <LOCAL RPC IP>
 #    -> Run folder: runs/switch2-XXXXXX
 #    then, in a freshly opened SmileBASIC, with a.b.c.d = the four octets of <LOCAL RPC IP>:
@@ -111,9 +119,16 @@ node run.cjs --rpc <LOCAL RPC IP>
 #      REMOVE NSR,&H60000000,&H3FFFFFFF
 #      V=START(39380,a,b,c,d,0,0,0,0)
 
-# 2. Drive everything else from the guided menu
+# 2. Back here: drive everything else from the guided menu.
+cd /path/to/ns2-savekit
 node tools/kit.cjs
 ```
+
+The patch step is not optional (skip it only if the checkout already has the
+changes), and it must happen **before** `run.cjs` starts: the host copies
+`engine/` into the run folder at startup, so a folder created earlier keeps the
+unpatched code. Patch, then start a new session and use the new
+`runs/switch2-XXXXXX`.
 
 `kit.cjs` finds the newest held session (or takes one as an argument) and opens
 straight onto the thing you pick from - the installed titles, with names, ids and
@@ -305,6 +320,11 @@ the end, for scripting.
 - **A held session**, in its own terminal:
   `node run.cjs --rpc <LOCAL RPC IP>` printing `Run folder: runs/switch2-XXXXXX`.
   Leave it running and keep SmileBASIC open.
+- **A patched engine checkout.** `sh patches/apply.sh /path/to/ns2jb`, pointed
+  at the checkout `run.cjs` is started from. An unpatched engine still holds a
+  session, but `list-apps` fails with `EEXIST …-ncm-system-programs.bin` and the
+  account lookup fails with `ListAllUsers: transport 0xf601` - see
+  [PATCHED-ENGINE.md](docs/PATCHED-ENGINE.md).
 - **A save that already exists.** Launch Seedsow Lullaby Demo once, reach the
   title screen and close it fully (**Home → X → Close**). fsp-srv creates no save
   data - until the game has made an archive, every attempt returns `0x7d402` for
@@ -439,10 +459,13 @@ title and choose `7`. The order is always **back up → write → restart → ve
 | --- | --- | --- |
 | `0x7d402` for every account | the game has not made a save yet | launch the demo and close it fully, then retry |
 | `Directory exceeds the N-entry probe limit` | your copy predates the 2048-entry limit | raise it in `tools/save-pull-root.cjs` and `tools/save-write-stage.cjs` |
-| `SESSION LOST` / `transport 0xf601` | the console stopped answering | restart the console, reopen SmileBASIC, start a new session |
+| `could not list installed applications` / `could not list accounts` | one of `inventory.cjs`'s two enumerations failed; the lines under it are the child's own error and a hint (older copies printed the catch-all `could not list applications or accounts`) | follow the hint; an account failure can be worked around with `node tools/inventory.cjs <run> <uid>` |
+| `EEXIST …-ncm-system-programs.bin` | the engine checkout is unpatched | `sh patches/apply.sh /path/to/ns2jb`, then start a new run - an existing run folder keeps the old engine copy |
+| `ListAllUsers: transport 0xf601` (after `InitializeApplicationInfo 0x0`) | the engine has no CMIF pointer descriptors, so the account query is malformed; not a console fault | apply the patches and start a new run |
+| `SESSION LOST` / `transport 0xf601` during a pull or write | the console stopped answering | restart the console, reopen SmileBASIC, start a new session |
 | `NO LIVE HOST` / `memory.sock` | the session folder is stale or gone | start `run.cjs` again and use the run folder it prints |
 | the title is listed without `✔` | it is not in your write allowlist | add its id to `config/titles.local.json` |
-| names are missing, ids only | the titledb cache could not be fetched | connect once with network access, or add names to `config/titles.local.json` |
+| names are missing, ids only | the name cache has not been fetched yet (first run needs one titledb download), or titledb does not list the title - demos/trials have no app id there and some new releases are absent | run once with network access for the full list; for titles still unnamed, paste the stub the tools print into `config/titles.local.json` (the id works without a name) |
 
 ### What the kit runs
 
@@ -490,6 +513,10 @@ Status of that split, so nobody has to guess:
   on the console with a proper editor UI, use their project.
 - **[ns2jb](https://gitlab.com/kurumuz/ns2jb)** (kurumuz) — the exploit that gives
   the held session every tool here talks to. Not vendored; fetched from upstream.
+- **[titledb](https://github.com/blawar/titledb)** (blawar) — MIT. Title names.
+  Fetched at run time into the gitignored `config/titledb-cache.json` (one
+  ~26 MB download, then reused offline); not bundled in this repository. Names
+  only — no game data.
 - **Artemis engine** — no code or assets included; no affiliation.
 
 ## Layout
@@ -497,14 +524,16 @@ Status of that split, so nobody has to guess:
 ```
 tools/     save pull/write/list/enumerate, ASB encoder, caret patcher, FTP mirror
 payloads/  Lua that runs inside the game: bootstrap probe, capability probe, env map + pluto fuzz
+config/    write allowlist template (local config files are gitignored)
 docs/      TECHNICAL.md (mechanism + IPC layout), RESULTS.md (hardware evidence
-           and the untethered roadmap), PATCHED-ENGINE.md (upstream patches)
-tests/     offline round-trip and manifest tests (do not prove console behaviour)
+           and the untethered roadmap), PATCHED-ENGINE.md (the required engine patches)
+tests/     offline round-trip, manifest, title-name and inventory-reporting tests
+           (do not prove console behaviour)
 ```
 
 ## Licence and third parties
 
 Our code is MIT (see [LICENSE](LICENSE)). Third-party components and links are
 listed in [NOTICE](NOTICE): ns2jb (upstream exploit, linked), Seedsow Lua Editor
-(0BSD, its save is fetched, not bundled), and the Artemis engine itself (no
-affiliation).
+(0BSD, its save is fetched, not bundled), titledb (MIT, its names are fetched at
+run time) and the Artemis engine itself (no affiliation).
