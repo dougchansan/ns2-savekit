@@ -49,6 +49,26 @@ const CAPS = arg('caps', '/tmp/ns2caps');
 const RETRIES = Number(arg('retries', '2'));
 const STAGE2_WAIT = Number(arg('wait', '600')) * 1000;
 const AFTER = arg('after', process.env.HARNESS_AFTER || null);
+// Operator rule, from the console side: ONE RPC session per boot. If a session dies,
+// the console is restarted with a hard power cycle - a wedged application never
+// accepts a second host, and trying costs a boot. The timestamps live outside the
+// process so a killed run still counts as having used the boot.
+const STATE = path.join(ROOT, '.harness-state.json');
+function readState() {
+  try { return JSON.parse(fs.readFileSync(STATE, 'utf8')); } catch { return {}; }
+}
+function writeState(patch) {
+  fs.writeFileSync(STATE, JSON.stringify({...readState(), ...patch}, null, 2) + '\n');
+}
+function oneSessionPerBoot() {
+  const state = readState();
+  if (!state.lastSessionAt) return {ok: true};
+  if (state.powerCycledAt && state.powerCycledAt > state.lastSessionAt) return {ok: true};
+  return {ok: false,
+    message: 'this boot already used its one RPC session (' +
+      new Date(state.lastSessionAt).toISOString() + '). Restart the console with a hard ' +
+      'power cycle before another session; a wedged application will not accept a second host.'};
+}
 fs.mkdirSync(CAPS, {recursive: true});
 
 // A closed stdout must not kill a cycle: the work matters, the log is a convenience.
@@ -147,13 +167,38 @@ async function waitAwake() {
 
 // Power off with a long hold, then a short press to boot. Measured: 16 s holds the
 // button long enough for a force-off, 1 s is a boot press, 0.1 s only toggles sleep.
+// Did the console actually lose power? A hold that misses the button leaves HDMI up
+// and USB mounted, which the fingerbot cannot tell us - so it is measured, not
+// assumed. Without this, "power cycled" was written down even when nothing happened,
+// and the one-session-per-boot guard would then allow a second session on a console
+// that never rebooted.
+async function consoleWentOff(seconds = 26) {
+  const deadline = Date.now() + seconds * 1000;
+  while (Date.now() < deadline) {
+    const usb = await http(`${PAD}/usb`, 4000);
+    try { if (JSON.parse(usb.body).mounted === false) return 'usb-detached'; } catch { /* board down */ }
+    const frame = capture('power-off');
+    try { if (fs.statSync(frame).size <= 12000) return 'no-signal'; } catch { /* gone */ }
+    await sleep(2000);
+  }
+  return null;
+}
+
 async function powerCycle() {
   log('fingerbot: arm up + 16 s hold (force off)');
+  const before = readState();
   await http(`${FINGERBOT}/up`, 30000);
   await sleep(1000);
   const off = await http(`${FINGERBOT}/press?seconds=16`, 45000);
   log('  ' + off.body);
-  await sleep(6000);
+  const gone = await consoleWentOff();
+  if (!gone) {
+    log('the console did not lose power (HDMI still up, USB still mounted): the hold ' +
+      'did not reach the button. Not claiming a power cycle.');
+    return false;
+  }
+  log('console is off (' + gone + ')');
+  await sleep(2000);
   log('fingerbot: 1 s press (boot)');
   const on = await http(`${FINGERBOT}/press?seconds=1`, 30000);
   log('  ' + on.body);
@@ -320,23 +365,31 @@ function runAfter(run) {
 // dump defeats the OCR), so ask the interpreter instead: PRINT 7, then look for the
 // result. Typing into a wedged application changes nothing and costs two seconds,
 // which is far cheaper than booting a host against a dead prompt.
+// Pure decision for the prompt probe, so it can be tested without a console. The
+// command echoes, so a single occurrence proves nothing; the result is either a
+// second occurrence or a row that is exactly the marker.
+function markerAnswered(text, rows, marker) {
+  const occurrences = (String(text).match(new RegExp('\\b' + marker + '\\b', 'g')) || []).length;
+  const resultLine = (rows || []).some(row => String(row.text).trim() === marker);
+  return occurrences >= 2 || resultLine;
+}
+
 async function promptAlive() {
   const marker = String(1000 + Math.floor(Math.random() * 9000));
   await typeText(PAD, 'PRINT ' + marker + '\n');
   for (let i = 0; i < 4; i++) {
     await sleep(1500);
     const shot = screen('prompt-alive');
-    // The command echoes, so one occurrence proves nothing: a dead prompt would show
-    // the echo and no result. Require the marker twice (echo + result) or once on a
-    // line that is not the echo.
-    const occurrences = (shot.text.match(new RegExp('\\b' + marker + '\\b', 'g')) || []).length;
-    const resultLine = shot.rows.some(row => row.text.trim() === marker);
-    if (occurrences >= 2 || resultLine) return {alive: true, frame: shot.image, occurrences};
+    if (markerAnswered(shot.text, shot.rows, marker))
+      return {alive: true, frame: shot.image};
   }
   return {alive: false, frame: capture('prompt-dead')};
 }
 
 async function startSession() {
+  const guard = oneSessionPerBoot();
+  if (!guard.ok) { log(guard.message); return {code: 6, run: null, frame: null}; }
+  writeState({lastSessionAt: Date.now()});
   await ota(KEY_BIN, 'hid-kb-1');
   const probe = await promptAlive();
   if (!probe.alive) {
@@ -392,7 +445,9 @@ async function startSession() {
   return {code: 6, run, frame};
 }
 
-(async () => {
+module.exports = {markerAnswered, oneSessionPerBoot};
+
+if (require.main === module) (async () => {
   if (MODE === 'state') {
     const shot = screen('state');
     const state = stateOf(shot);
@@ -411,7 +466,10 @@ async function startSession() {
 
   if (MODE === 'boot' || MODE === 'full') {
     await ota(PRO_BIN, 'pro-2');
-    await powerCycle();
+    if (!await powerCycle()) {
+      log('stopping: no power cycle, so there is no fresh boot to use');
+      process.exit(4);
+    }
     if (!await waitAwake()) { log('board never came back; is the console plugged in?'); process.exit(4); }
     if (!await waitPadAdopted()) { log('pad was not adopted by the console'); process.exit(3); }
     const frame = await launchSmileBASIC();

@@ -14,3 +14,4 @@ tools/esp32_hid/build_opt.h
 tools/esp32_gc/wifi_secret.h
 tools/esp32_pro/wifi_secret.h
 wifi_secret.h
+.harness-state.json

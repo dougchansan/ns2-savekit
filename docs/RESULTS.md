@@ -1701,3 +1701,36 @@ requires the marker **twice** - once as the echoed command and once as its resul
 before starting a host. A wedged application shows only the echo (or nothing), and the
 harness reports that instead of booting against a dead prompt. Typing into a dead app
 is harmless, so the probe costs about two seconds.
+
+## 2026-10-29 17:10: operating rule from the operator - ONE RPC session per boot
+
+The operator's rule, after a day of wedges: **one RPC session per boot; if the
+session disconnects, hard-restart the console.** A wedged application never accepts a
+second host, and every attempt to reuse one costs a boot. This supersedes the
+"recovered prompt" idea recorded earlier: a recovered prompt answered `PRINT 1`, then
+died on the first `LOAD`, which is exactly what the rule predicts.
+
+The harness now enforces it rather than trusting the operator to remember:
+
+- `.harness-state.json` (gitignored) records `lastSessionAt` and `powerCycledAt`;
+- `startSession()` refuses with exit **6** when a session has already been started
+  since the last verified power cycle, and the message says to hard-restart;
+- `lastSessionAt` is written **before** the host starts, so a killed run still counts.
+
+And the power cycle itself is now **verified, not assumed**: after the 16 s hold the
+harness polls for a real sign of power loss - a no-signal capture (~8609 bytes) or the
+board reporting `mounted:false` - for 26 seconds. If neither appears it logs "the hold
+did not reach the button", does **not** write `powerCycledAt`, and exits 4. Before
+this, a failed hold was recorded as a fresh boot, which would have let the guard
+permit a second session on a console that never rebooted.
+
+### A require side effect started a real cycle
+
+Requiring `tools/harness.cjs` from a one-line `node -e` to test a helper executed its
+CLI, because the main body was an unguarded IIFE: it flashed the board, held the
+button and pressed it - a real console action from a command that was supposed to be
+inert. The body is now guarded by `require.main === module`, and `module.exports`
+carries the pure helpers (`markerAnswered`, `oneSessionPerBoot`). Measured result of
+that accident: the console's screen only **dimmed** (same frozen content, 160792 bytes
+against 255345 later), so the hold again did not power it off - which is what the new
+verification would now report instead of proceeding.
