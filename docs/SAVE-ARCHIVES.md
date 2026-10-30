@@ -83,7 +83,7 @@ pulled; `--list-uids` prints the console's accounts.
 Games lay out their archive however they like, and that needs no per-game code:
 the walk starts at `/`, lists directories, and recurses. Breath of the Wild is
 the usual example: `0`…`8` slot folders, `album/`, `pict_book/`, `tracker/`,
-`option.sav` — a 100% Switch save is [227 files](https://github.com/Torphedo/BOTW-CompletedSaveFile)
+`option.sav` — the reference 100% save has [227 files](https://github.com/Torphedo/BOTW-CompletedSaveFile)
 in that tree. The toolkit already pulls nested trees (`saves/all/Seedsow-Lullaby-full/system/ui/`
 and `saves/all/SmileBASIC-4-demo/f/###/` are two levels deep).
 
