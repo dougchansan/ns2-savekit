@@ -1877,3 +1877,18 @@ So the acquisition failure has moved, not vanished. What remains is a heap-layou
 requirement in the native-link phase (an address candidate the planner can encode),
 which retries may or may not satisfy; it is not the same flake as before and should
 not be diagnosed with the canary's history.
+
+### The native-link phase has no candidates at all, twice
+
+Both runs that reached the native-link phase recorded `linkCandidates: 0` - not a list
+of candidates the planner rejected, an **empty list**. The checks before it passed
+(`range.completed`, `readResult 0`, `prefixMatches`, `firstDifference >= 0x4000`, i.e.
+a real over-read), so the over-read happened and contained nothing that
+`native-links.cjs` recognises as a pointer.
+
+Two boots, same result, so this is not the canary race and should not be retried as
+if it were. What it needs is a look at what the leaked range actually contains
+(`report.cacheRange` plus the range snapshot files) - whether it is a zero tail, a
+stale block, or something the candidate filter is too strict about - and the host
+title cannot be swapped to change the layout: the bootstrap's stage 1 validates the
+retail SDK (`sdkCrc32 3925528160`), so the demo build would fail there instead.
