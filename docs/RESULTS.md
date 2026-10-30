@@ -1089,3 +1089,86 @@ Nothing was typed on either attempt (12 s settle on the second). So the UART sid
 of that bridge is healthy and the Flipper's USB is not in the console's USB path in
 this rig, which leaves the ESP32 keyboard build as the only typing channel - and it
 requires an OTA re-enumeration after SmileBASIC has already launched.
+
+## 2026-10-29 14:38: 4/4 after applying the missing engine patches
+
+The five failures above were tested against an engine that was **missing two of the
+patches this toolkit requires**. `patches/README.md` lists them and says to apply
+them before `run.cjs` starts, because the host copies `engine/` into each run folder:
+
+| patch | state before | state now |
+| --- | --- | --- |
+| `0001-shared-ipc-pointer-descriptors.diff` | absent (7 of 54 added lines present, all incidental) | applied verbatim |
+| `0002-mounted-save-inspect-export.diff` | absent (0 of 2) | applied, merged with upstream's renamed `resolved` field |
+| `rest-engine-lib-bridge.cjs.diff` | absent | applied |
+| session / ncm / find-metadata / probe-reserved-gap / run | already present | unchanged |
+
+With those in place, the very next boot reached **4/4**: run `switch2-uy0bDz`,
+root held at 14:38:47, `current-root.json` with `pid: 1`, `rootHandle: 26509737`,
+`calls 39068`, and the pipeline in its held state
+(`switch2/fs-execution-current.json` with `retainedEndpoint.ready`).
+
+That is one boot, so it is not proof that the patches were the only cause - but the
+contrast (0/5 without, 1/1 with, same console, same game binary, same harness) is
+the strongest signal recorded today, and the patch notes predict exactly this class
+of failure. The two patch-dependent capabilities were then observed working:
+
+| capability | evidence |
+| --- | --- |
+| `ListAllUsers` | `save-pull-root.cjs` printed `account users: 3` - before 0001 this fails with `transport 0xf601` |
+| installed-title enumeration | `list-apps.cjs`: 9 applications, `BuiltInUser` |
+| held FS endpoint for tools | `fs-execution-current.json` `retainedEndpoint: {ready: true}`, `list-apps` ran against a live session |
+
+Installed titles seen (this boot):
+
+```
+0x010012900d38a000  Nora to Oujo to Noraneko Heart 2 (trial)
+0x010042d022aea000  Seedsow Lullaby (demo)
+0x01005eb012fe2000  Wagamama High Spec (trial)
+0x0100abf008968000  (unmapped)
+0x0100b4b00f9f6000  SmileBASIC 4 (demo)
+0x0100c9100b06a000  SmileBASIC 4 (retail)
+0x0100ee5021c9e000  Seedsow Lullaby (full)
+0x04008e001f098000  Nintendo Switch Sports Resort
+0x0400c3f00006e000  (unmapped)
+```
+
+### A save cannot be pulled from the title that hosts the exploit
+
+Pulling retail SmileBASIC's own save (`0100c9100b06a000`) from a session hosted
+**by retail SmileBASIC** fails for every combination, and the interesting one is:
+
+```
+space=User type=Account uid=539fd27752770010 -> 0xe02
+space=<everything else>                      -> 0x7d402
+```
+
+`0xe02` is not `0x7d402` ("no save data"): the save exists, and the running
+application holds it. So the metadata milestone cannot read SmileBASIC's save from
+a SmileBASIC-hosted session at all; it needs a session hosted by another title (the
+Seedsow demo), or the save pulled while SmileBASIC is not running. That is a real
+constraint on the plan, and it was only visible by trying it.
+
+### The second save-touching operation crashed the console with 2162-0002
+
+The Seedsow demo pull (`010042d022aea000`, the backup before any write) died during
+account enumeration with `Console response timed out; restart the application`, and
+the console then showed **`2162-0002`** (frame `2026-10-29-2162-0002.png`). That is
+the documented promoted-root failure (RESULTS, "2162-0002 host crash"), and it came
+after `list-apps` plus one save probe in the same boot - consistent with "a restart
+between save operations is advice, not a requirement, but the drop is
+probabilistic".
+
+The same frame records the console's system version: **23.0.1** (the error screen
+prints `(X2) 23.0.1` next to the model/serial block).
+
+So this boot achieved 4/4 and two read-only enumerations, and did not get a save
+file: the backup for the wipe+inject milestone is still the 2026-10-28 copy in
+`saves/Seedsow-Lullaby-demo/user-539fd277/2026-10-28_0244`, and the launcher set is
+built from it (`tools/build-untethered.sh` with `BODY`/`EXTRA`, staged and hashed).
+
+### probe-sd was not reached
+
+The session was lost before `probe-sd.cjs` could run, so `OpenSdCardFileSystem`
+(cmd 18) remains **unmeasured** - and with no microSD Express card inserted there
+would be nothing to open even if the command exists.
