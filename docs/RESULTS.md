@@ -1384,3 +1384,50 @@ offset, and a typed window is still accepted exactly as before.
 What is *not* yet explained is try 2's `type=0` window at the first offset. If the
 same offset keeps producing type 0, the qualification may need a rule for it too -
 that is the next thing to measure rather than guess.
+
+## 2026-10-29 16:25-16:40: the sweep was one-directional and out of range
+
+Widening the canary sweep to look for an owned window exposed two things about the
+search itself, and one about the console.
+
+### The sweep crashed outside the marker buffer, so only ~6 offsets existed upward
+
+`wave()` writes the marker path at `activeMarkerOffset` inside an `extent`-sized
+buffer, and the original sweep only walked upward from the base offset. At offset
+9312 the run died with:
+
+```
+RangeError: The value of "offset" is out of range. It must be >= 0 && <= 9281. Received 9312
+    at wave (probe-reserved-gap.cjs:418) <- retryWave <- main
+```
+
+So upward from the 0x2340 base there are only a handful of usable slots before the
+buffer ends. The sweep now alternates +/- 0x30 steps from the base and **skips**
+offsets the buffer cannot hold. (The first version clamped to the edge instead, which
+made every upward attempt past 0x2400 repeat that same offset - 14 of 24 lines in one
+sweep were 0x2400, half the waves spent on one measurement.)
+
+### Across 24 offsets in both directions, ownership and window never coexisted
+
+One sweep, alternating up and down:
+
+| offset | canaryType | changed | window |
+| --- | --- | --- | --- |
+| 0x2340 | 0 | `["canary"]` | true |
+| 0x2370 | null | `["canary"]` | true |
+| 0x2310 | 0 | `["canary"]` | true |
+| 0x23d0 | null | `["canary"]` | true |
+| 0x2280 | **1** | `[]` | **false** |
+| 0x21c0 | **1** | `[]` | **false** |
+| 0x2250 ... 0x2130 | 0 | `["canary"]` | true |
+
+The qualification wants an *owned* canary (`canaryType === 1`) **and** a receive-order
+window. In this run every owned reading had no window, and every windowed reading was
+type 0 or null. That is not an offset-search problem any more: the two halves of the
+qualification are mutually exclusive in this console state, whatever offset is tried.
+
+What that means: the 14:38 and 14:52 successes were not luck about *where* to land, or
+the sweep would have found a slot; something about the console or the application's
+heap state changed between those boots and now. The next measurement should compare a
+successful boot's row (the `cases` array in the report) against a failing one for the
+same profile, rather than extending the sweep further.
