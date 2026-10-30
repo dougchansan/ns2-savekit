@@ -67,6 +67,21 @@ Two of these links are *not* what a first reading suggests, and both are settled
 - **The save has ~66 MB free** and the `tmp` mount ~0.5 MB; the latter is reset by the
   cleanup step because a failed attempt leaves its extent tree inside `tmp.dat`.
 
+## Operating rules (measured, not stylistic)
+
+1. **One RPC session per boot.** If the session disconnects, hard-restart the console.
+   A wedged application does not accept a second host: a recovered prompt answered
+   `PRINT 1` and then died on the first `LOAD` (RESULTS, 17:02). The harness enforces
+   this through `.harness-state.json` and exits 6 rather than starting a second host.
+2. **A power cycle must be observed, not assumed.** After the 16 s hold the harness
+   waits for a no-signal capture or the board reporting unmounted. If neither appears
+   it says the hold did not reach the button and exits 4, because a failed hold
+   recorded as a fresh boot is what would let rule 1 be broken by accident.
+3. **One save operation per attempt** where possible, and never `--keep-open`: leaving
+   a save mounted breaks the next session.
+4. **Back up before every write**, and verify by hash after - `inject-launcher.sh`
+   is ordered that way for that reason.
+
 ## What is blocked, and on what
 
 | blocker | consequence | owner |
