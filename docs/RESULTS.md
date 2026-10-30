@@ -1988,3 +1988,39 @@ therefore rebuilt staging with the wrong program - a 2045-byte probe instead of 
 staging set is rebuilt with the injector's own body plus the instrumentation:
 ns2jb.lua/sscode004.lua 5134 bytes, sha256 9b4859e0..., and `tests/test_payload_lua.lua`
 13/13 (the line-width check caught my first, over-long comment).
+
+## 2026-10-30 11:11: the restore path works on hardware, nested file included
+
+Fifth attempt of the night (the first four died in acquisition) reached 4/4 and ran
+`save-restore.sh` against the **Nora trial** save - a title with nothing to do with
+Seedsow, chosen because it is the smallest save that has a nested file:
+
+```
+1/4 backing up the current save  10 files, 154384 bytes -> saves/010012900d38a000-pre-restore-...
+2/4 writing the save back
+    restore: /debug/lua/index.lua live 427B be68bef8e844deba... -> 427B be68bef8e844deba...
+    ... 9 more, each logged live -> new
+3/4 pulling the result          10 files, 154384 bytes
+4/4 verifying                    ok x10
+VERIFIED 10 files, 154384 bytes from the manifest
+```
+
+What this establishes:
+
+- `--space 1 --type 1` selects the save explicitly (the pull printed
+  `mounted space=User type=Account rank=0 index=0 uid=539f...`).
+- **Nested directories work**: `/debug/lua/index.lua` was created under `/debug/lua`
+  and read back byte-identical.
+- The four-step order works: pre-restore backup, transactional write, re-pull, hash
+  verification against the manifest.
+- Every one of the 10 files matched the manifest on a fresh pull.
+
+What it does **not** establish, and I will not claim: the source directory was a pull
+of that same save, so the bytes restored were identical to the bytes live. The restore
+branch ran (it logged `live -> new` instead of the replace-equality check), but the
+case that matters for BOTW - **overwriting bytes that differ** - has not been
+exercised. The mechanics after that decision are the same create/replace/commit path
+that the Seedsow injection has used repeatedly, but "differs" itself is untested.
+
+Yield note: 1 success in 5 boots tonight, and the successful one took 4 minutes of
+acquisition after three late-stage failures on other boots.
