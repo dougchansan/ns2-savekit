@@ -1734,3 +1734,25 @@ carries the pure helpers (`markerAnswered`, `oneSessionPerBoot`). Measured resul
 that accident: the console's screen only **dimmed** (same frozen content, 160792 bytes
 against 255345 later), so the hold again did not power it off - which is what the new
 verification would now report instead of proceeding.
+
+## 2026-10-29 17:22: a mock console found the guard's own bug
+
+The harness can now be driven without hardware: `HARNESS_CAMERA` replaces the capture
+command and `HARNESS_OCR` the OCR, so `tests/test_harness_powercycle.cjs` runs
+`harness boot` against a mock console in a child process (it has to be a child - the
+harness is run with `spawnSync`, which blocks this process and would leave an
+in-process server unable to answer, which is how the first version of the test hung).
+
+Two cases, both passing:
+
+| camera | harness behaviour |
+| --- | --- |
+| HDMI up (200 KB frames) | "the hold did not reach the button", exit 4, **no state written** |
+| no signal (9 KB frames) | "console is off (no-signal)", records `powerCycledAt`, proceeds to boot |
+
+The second case exposed a real bug in the code I had just added: `powerCycle()`
+returned without writing `powerCycledAt` because a patch applied to an anchor that no
+longer existed. The one-session-per-boot guard reads that timestamp, so **every session
+after the first would have been refused as "this boot already used its session"** -
+the rule would have appeared to work while making the arcade unusable. Found offline,
+in 31 seconds, instead of after a power cycle and a failed session on hardware.

@@ -34,7 +34,11 @@ const ESPOTA = process.env.ESPOTA ||
   path.join(process.env.HOME, 'Library/Arduino15/packages/esp32/hardware/esp32/3.3.12/tools/espota.py');
 const PRO_BIN = path.join(ROOT, 'tools/esp32_pro/build/esp32.esp32.esp32s2/esp32_pro.ino.bin');
 const KEY_BIN = path.join(ROOT, 'tools/esp32_hid/build/esp32.esp32.esp32s2/esp32_hid.ino.bin');
-const OCR = path.join(ROOT, 'tools/vision/ocr');
+// Overridable so the state machine can be exercised against a mock console: a test
+// supplies a camera command that writes frames from a queue and an OCR command that
+// returns scripted text. Defaults are the real capture card and Vision.
+const CAMERA = process.env.HARNESS_CAMERA || null;
+const OCR = process.env.HARNESS_OCR || path.join(ROOT, 'tools/vision/ocr');
 const COMMAND = 'V=START(39380,192,168,50,235,0,0,0,0)';
 
 const argv = process.argv.slice(2);
@@ -60,8 +64,7 @@ function readState() {
 function writeState(patch) {
   fs.writeFileSync(STATE, JSON.stringify({...readState(), ...patch}, null, 2) + '\n');
 }
-function oneSessionPerBoot() {
-  const state = readState();
+function oneSessionPerBoot(state = readState()) {
   if (!state.lastSessionAt) return {ok: true};
   if (state.powerCycledAt && state.powerCycledAt > state.lastSessionAt) return {ok: true};
   return {ok: false,
@@ -89,7 +92,8 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function capture(tag) {
   const file = path.join(CAPS, `${stamp()}-${tag}.png`);
-  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'avfoundation',
+  if (CAMERA) execFileSync('sh', ['-c', `${CAMERA} "${file}"`], {timeout: 40000});
+  else execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'avfoundation',
     '-pixel_format', 'uyvy422', '-framerate', '30', '-video_size', '1920x1080',
     '-i', '0:none', '-frames:v', '1', '-update', '1', '-y', file], {timeout: 40000});
   return file;
@@ -208,6 +212,10 @@ async function powerCycle() {
     if (r.ok) { log('board answering again (console has USB power)'); break; }
   }
   await sleep(6000);
+  // Only now is this a boot we may put one session on.
+  writeState({powerCycledAt: Date.now(), powerCycledFrom: before.lastSessionAt || null});
+  log('power cycle verified (' + gone + ')');
+  return true;
 }
 
 // The PaD must be adopted as a Pro Controller before any menu input registers.

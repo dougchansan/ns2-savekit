@@ -544,6 +544,8 @@ tests/     offline suites; none of them prove console behaviour:
              lua  tests/test_artwork_lua.lua      chooser selection (8)
              node tests/test_console_state.cjs    screen classification (9)
              sh   tests/test_inject_dryrun.sh     injection builder/manifest (3)
+             node tests/test_harness_guard.cjs    session/power-cycle rules (5)
+             node tests/test_harness_powercycle.cjs  mock console, power-cycle (2)
              python3 tests/test_offline.py        save/ASB encoders (8)
 ```
 
