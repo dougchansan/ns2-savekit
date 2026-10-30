@@ -1931,3 +1931,44 @@ launcher body in both places it is read from, and the NSO verifier - read back f
 console and hashed. This is an in-place replace/add, not a literal wipe: the game's own
 290-file save is kept because the engine needs it to boot. The backup was taken as the
 session's first operation, so the pre-injection state is on disk.
+
+## 2026-10-30 21:37-22:32: the launcher is in the save, but it left no trace of running
+
+Sequence: injected at 21:29 (verified), launched the **Seedsow Lullaby Demo** at 21:37,
+then took a session at 22:24 (acquisition passed first time in three) and pulled the
+save back at 22:31 to look for the launcher's own report.
+
+What the console's save contains now (`saves/seedsow-after-boot`, 290 files):
+our five files, unchanged and matching the manifest, plus `ns2jb-report.txt` - which is
+**stale**: it reads `ns2jb body / lua Lua 5.1 / save save: / game game: / t 1793085216 /
+sd no / sdw no / dump nil / dumpe not enough memory`, a capability probe from an
+earlier payload, not the launcher's `ns2jb-launch.txt`.
+
+The launcher's report file (`save:/ns2jb-launch.txt`, written unconditionally by
+`staging-launcher/ns2jb.lua` line 68) is **absent**. So the honest reading is: the
+injected suspend did not lead to our script running, or it ran and could not write -
+and the console gave no way to tell, because after the account picker the screen went to
+**no signal while the console stayed alive** (ping yes, USB mounted, pad adopted). That
+is the documented HDMI fault, and it is also consistent with the black screen recorded
+for this payload path earlier.
+
+So "the demo boots the launcher" is **not** established. The injection is; execution is
+not. The next experiment should make execution observable from the save alone: have the
+launcher append a provenance line to a file the editor already writes
+(`ssedit-session.txt` exists in the save and is known writable), so that a pull can
+distinguish "never ran" from "ran but could not create its report".
+
+Also measured this stretch: the acquisition's failure has moved past the canary. Six
+consecutive boots all report `markerSelected: true` and `markerReproduced: true`, then
+fail in four different later places:
+
+| boot | error |
+| --- | --- |
+| 21:44 jE19V1 | Native batch did not terminate; resources retained |
+| 21:50 7JfV2b | Clean alias did not qualify within its attempt limit |
+| 22:04 zs5EQU | no qualified, encodable link candidate |
+| 22:13 kHvUON | Native batch did not terminate; resources retained |
+| 22:23 QUJHDI | Overwrite missed the qualified canary (the old flake) |
+
+One boot in six passed all of it (21:23, which performed the injection). That yield,
+not the canary, is now the limiting factor.
