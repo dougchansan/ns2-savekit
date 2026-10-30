@@ -135,8 +135,14 @@ function stateOf(shot) {
   return classify({text: shot.text, bytes});
 }
 
+let padFailures = 0;
 async function press(query, ms = 90, pause = 1600) {
   const reply = await http(`${PAD}/pro?${query}&ms=${ms}`);
+  // A dead pad used to drive dozens of blind presses (plus OCR) before anything
+  // failed. Reset on any success; give up after 8 presses in a row go unanswered.
+  if (reply.ok) padFailures = 0;
+  else if (++padFailures >= 8)
+    throw Error('pad stopped answering (' + padFailures + ' presses failed): ' + reply.body.slice(0, 80));
   await sleep(pause);
   return reply;
 }
@@ -230,8 +236,8 @@ async function powerCycle() {
     const r = await http(`${PAD}/status`, 4000);
     if (r.ok) { log('board answering again (console has USB power)'); break; }
   }
-  await sleep(6000);
-  // Only now is this a boot we may put one session on.
+  // waitAwake() re-polls the board before we use the boot, so no blind settle wait
+  // is needed here. Only now is this a boot we may put one session on.
   writeState({powerCycledAt: Date.now(), powerCycledFrom: before.lastSessionAt || null});
   log('power cycle verified (' + gone + ')');
   return true;
@@ -394,7 +400,7 @@ async function waitHeld(run, seconds = 300) {
       const record = JSON.parse(fs.readFileSync(path.join(run, 'switch2', 'pipeline.json'), 'utf8'));
       if (record.hold && record.hold.state === 'ready') return true;
     } catch { /* the file appears once the pipeline starts */ }
-    await sleep(3000);
+    await sleep(1500);
   }
   return false;
 }
@@ -456,14 +462,24 @@ async function startSession() {
   try { execFileSync('pkill', ['-f', 'run.cjs --rpc'], {timeout: 5000}); } catch { /* none running */ }
   await sleep(500);
   const host = spawn('node', ['run.cjs', '--rpc', MAC_IP], {cwd: RPC_DIR, stdio: ['ignore', handle, handle]});
+  // Watch the host: if it dies (e.g. EADDRINUSE on 39380) fail fast instead of
+  // waiting out the whole stage-2 window against a log that will never grow.
+  let hostExit = null;
+  host.on('exit', (code, signal) => { hostExit = {code, signal}; });
+  const hostCrashed = () => hostExit && (hostExit.signal || (hostExit.code !== 0 && hostExit.code !== null));
   let run = null;
   for (let i = 0; i < 60; i++) {
     await sleep(500);
     const text = fs.readFileSync(logFile, 'utf8');
     const m = text.match(/Run folder: (\S+)/);
     if (m) { run = m[1]; break; }
+    if (hostCrashed()) break;
   }
-  if (!run) { host.kill(); throw Error('host did not print a run folder; see ' + logFile); }
+  if (!run) {
+    host.kill();
+    throw Error('host did not print a run folder' +
+      (hostExit ? ` (host exited ${hostExit.signal || 'code ' + hostExit.code})` : '') + '; see ' + logFile);
+  }
   log('host run ' + run);
   await typeLine('LOAD "TXT:NS2"');
   await waitFor('are you sure', 'confirm');                  // Yes is preselected
@@ -474,7 +490,9 @@ async function startSession() {
   const deadline = Date.now() + STAGE2_WAIT;
   let last = '';
   while (Date.now() < deadline) {
-    await sleep(10000);
+    // Reading run.log/pipeline is cheap, so poll briskly: 4/4, errors and a host
+    // crash are noticed within ~2 s instead of up to 10 s.
+    await sleep(2000);
     const state = readRun(run);
     if (state.root || /4\/4/.test(state.log)) {
       log(`4/4 REACHED (${state.stages.at(-1) || 'stage 4'})`);
@@ -491,6 +509,12 @@ async function startSession() {
       log('acquisition failed: ' + state.error.slice(0, 140));
       log('frame ' + frame);
       return {code: 3, run, error: state.error, frame};
+    }
+    if (hostCrashed() && !state.root) {
+      const frame = capture('host-exited');
+      log('host process exited (' + (hostExit.signal || 'code ' + hostExit.code) +
+        ') before 4/4; see ' + logFile);
+      return {code: 4, run, frame};
     }
     const stage = state.stages.at(-1) || 'waiting';
     if (stage !== last) { log('  ' + stage); last = stage; }
