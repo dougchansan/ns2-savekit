@@ -1756,3 +1756,27 @@ longer existed. The one-session-per-boot guard reads that timestamp, so **every 
 after the first would have been refused as "this boot already used its session"** -
 the rule would have appeared to work while making the arcade unusable. Found offline,
 in 31 seconds, instead of after a power cycle and a failed session on hardware.
+
+## 2026-10-29 17:25: the whole cycle runs against a mock console
+
+`tests/test_harness_sequence.cjs` drives `harness full` end to end with no hardware:
+a mock board (child process) serving `/status`, `/usb`, `/pro`, `/key`, `/type`, an
+OTA stub that flips the reported firmware the way a real flash does, a camera that
+reports no signal, and an OCR mock that models the three screens the sequence depends
+on - the confirm dialog up, the confirm dialog dismissed, and the prompt answering
+`PRINT <n>` with the echo plus the result.
+
+It asserts the things that cost boots when they break:
+
+| assertion | why |
+| --- | --- |
+| the cycle exits 0 | the whole path completes |
+| `power cycle verified` appears | the cycle is not attempted on an unverified boot |
+| the four lines are typed in order | `LOAD`, blank (dialog), `RUN`, `REMOVE` |
+| `V=START` uses the nine-argument form | the five-argument form fails on this payload |
+| `--after` runs once the held endpoint is ready | the save operation is not attempted early |
+
+5/5, about 40 seconds. It would have caught every harness bug this project has hit by
+hand: the dropped first keystroke after a flash, the OCR marker that split "Out of
+memory (REMOVE)" across lines, the unguarded `require` that started a real cycle, and
+the `powerCycle` tail that never recorded a boot.

@@ -546,6 +546,7 @@ tests/     offline suites; none of them prove console behaviour:
              sh   tests/test_inject_dryrun.sh     injection builder/manifest (3)
              node tests/test_harness_guard.cjs    session/power-cycle rules (5)
              node tests/test_harness_powercycle.cjs  mock console, power-cycle (2)
+             node tests/test_harness_sequence.cjs   mock console, whole cycle (5)
              python3 tests/test_offline.py        save/ASB encoders (8)
 ```
 
