@@ -542,6 +542,7 @@ tests/     offline suites; none of them prove console behaviour:
              lua  tests/test_payload_lua.lua      payload v1 decisions (13)
              lua  tests/test_metadata_lua.lua     name/thumbnail writer (15)
              lua  tests/test_artwork_lua.lua      chooser selection (8)
+             node tests/test_console_state.cjs    screen classification (9)
              python3 tests/test_offline.py        save/ASB encoders (8)
 ```
 

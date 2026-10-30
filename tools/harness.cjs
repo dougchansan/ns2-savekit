@@ -42,7 +42,8 @@ const arg = (name, fallback) => {
   const i = argv.indexOf('--' + name);
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 };
-const VERBS = ['boot', 'session', 'full', 'status'];
+const VERBS = ['boot', 'session', 'full', 'status', 'state'];
+const {classify} = require('./console-state.cjs');
 const MODE = VERBS.includes(argv[0]) ? argv[0] : 'full';
 const CAPS = arg('caps', '/tmp/ns2caps');
 const RETRIES = Number(arg('retries', '2'));
@@ -89,6 +90,13 @@ function screen(tag) {
   const text = rows.map(r => r.text).join(' ').toLowerCase();
   const band = (lo, hi) => rows.filter(r => r.y >= lo && r.y <= hi).map(r => r.text);
   return {image, rows, text, titleRow: band(0.70, 0.82), iconRow: band(0.09, 0.15)};
+}
+
+// One word for what the console is showing, from the same frame the OCR came from.
+function stateOf(shot) {
+  let bytes = 0;
+  try { bytes = fs.statSync(shot.image).size; } catch { /* capture vanished */ }
+  return classify({text: shot.text, bytes});
 }
 
 async function press(query, ms = 90, pause = 1600) {
@@ -171,18 +179,27 @@ async function waitPadAdopted() {
 }
 
 async function launchSmileBASIC() {
-  // The console boots onto the news channel, where no tile is selected and no
-  // title label exists. A leaves it for the game row. Never press A when the title
-  // label is already visible: there A would launch whatever tile is selected.
+  // Act on what the console is showing rather than pressing and hoping. The old
+  // behaviour stepped RIGHT through a black or wedged screen eight times, which cost
+  // boots; a wedged RPC loop or a crash dialog cannot be navigated at all.
   let shot = screen('menu');
-  if (!shot.titleRow.length) {
-    if (/featured news|a start|news/i.test(shot.text)) {
-      log('leaving the news view (A)');
-      await press('a=1', 100, 2500);
-      shot = screen('row');
-    } else {
-      for (let i = 0; i < 10 && !shot.text; i++) { await sleep(3000); shot = screen('menu-wait'); }
+  for (let step = 0; step < 12; step++) {
+    const state = stateOf(shot);
+    log(`  state: ${state}`);
+    if (state === 'home-row' || state === 'topmenu' || state === 'playmenu' ||
+        state === 'direct-mode') break;
+    if (state === 'wedged-rpc' || state === 'error-dialog') {
+      throw Error(`console is ${state}; a power cycle is required before another launch ` +
+        `(frame ${shot.image})`);
     }
+    if (state === 'no-signal') throw Error('console shows no signal; it is off or asleep');
+    if (state === 'home-news') {
+      log('  leaving the news view (A)');
+      await press('a=1', 100, 2500);
+    } else {
+      await sleep(3000);                       // black or unknown: HDMI may still settle
+    }
+    shot = screen('menu-' + step);
   }
   if (!shot.titleRow.length) { await press('a=1', 100, 2500); shot = screen('row2'); }
   // Walk the row, reading the label above the selected tile. The row reorders, so
@@ -355,6 +372,13 @@ async function startSession() {
 }
 
 (async () => {
+  if (MODE === 'state') {
+    const shot = screen('state');
+    const state = stateOf(shot);
+    console.log(JSON.stringify({state, frame: shot.image,
+      text: shot.text.slice(0, 160)}, null, 2));
+    process.exit(0);
+  }
   if (MODE === 'status') {
     const run = newestRun();
     if (!run) { console.log('no runs'); process.exit(4); }
