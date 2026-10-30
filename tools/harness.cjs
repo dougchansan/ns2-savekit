@@ -53,6 +53,10 @@ const CAPS = arg('caps', '/tmp/ns2caps');
 const RETRIES = Number(arg('retries', '2'));
 const STAGE2_WAIT = Number(arg('wait', '600')) * 1000;
 const AFTER = arg('after', process.env.HARNESS_AFTER || null);
+// Measured after reseating the arm: a 1 s press no longer boots the console (1, 2 and
+// 4 s all failed), while 3 s did. HDMI also appears only around t+40 s, so the wait
+// for a picture is longer than it used to be.
+const BOOT_PRESS_MS = Number(arg('boot-press', process.env.HARNESS_BOOT_PRESS || '3000'));
 // Operator rule, from the console side: ONE RPC session per boot. If a session dies,
 // the console is restarted with a hard power cycle - a wedged application never
 // accepts a second host, and trying costs a boot. The timestamps live outside the
@@ -92,10 +96,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function capture(tag) {
   const file = path.join(CAPS, `${stamp()}-${tag}.png`);
-  if (CAMERA) execFileSync('sh', ['-c', `${CAMERA} "${file}"`], {timeout: 40000});
-  else execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'avfoundation',
-    '-pixel_format', 'uyvy422', '-framerate', '30', '-video_size', '1920x1080',
-    '-i', '0:none', '-frames:v', '1', '-update', '1', '-y', file], {timeout: 40000});
+  const command = CAMERA
+    ? () => execFileSync('sh', ['-c', `${CAMERA} "${file}"`], {timeout: 40000})
+    : () => execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'avfoundation',
+      '-pixel_format', 'uyvy422', '-framerate', '30', '-video_size', '1920x1080',
+      '-i', '0:none', '-frames:v', '1', '-update', '1', '-y', file], {timeout: 40000});
+  // The capture card fails transiently (a frame in flight when ffmpeg opens it), and a
+  // single failure used to abort a whole boot.
+  try { command(); } catch { command(); }
   return file;
 }
 
@@ -181,8 +189,9 @@ async function consoleWentOff(seconds = 26) {
   while (Date.now() < deadline) {
     const usb = await http(`${PAD}/usb`, 4000);
     try { if (JSON.parse(usb.body).mounted === false) return 'usb-detached'; } catch { /* board down */ }
-    const frame = capture('power-off');
-    try { if (fs.statSync(frame).size <= 12000) return 'no-signal'; } catch { /* gone */ }
+    let frame = null;
+    try { frame = capture('power-off'); } catch { /* capture card hiccup */ }
+    try { if (frame && fs.statSync(frame).size <= 12000) return 'no-signal'; } catch { /* gone */ }
     await sleep(2000);
   }
   return null;
@@ -202,9 +211,11 @@ async function powerCycle() {
     return false;
   }
   log('console is off (' + gone + ')');
-  await sleep(2000);
-  log('fingerbot: 1 s press (boot)');
-  const on = await http(`${FINGERBOT}/press?seconds=1`, 30000);
+  // Give the power-off time to finish: a boot press 2 s later was ignored (measured
+  // 17:53), while a press 15 s later booted the console (17:51).
+  await sleep(10000);
+  log(`fingerbot: ${BOOT_PRESS_MS / 1000} s press (boot)`);
+  const on = await http(`${FINGERBOT}/press?seconds=${BOOT_PRESS_MS / 1000}`, 30000);
   log('  ' + on.body);
   for (let i = 0; i < 20; i++) {
     await sleep(3000);
@@ -236,7 +247,8 @@ async function launchSmileBASIC() {
   // behaviour stepped RIGHT through a black or wedged screen eight times, which cost
   // boots; a wedged RPC loop or a crash dialog cannot be navigated at all.
   let shot = screen('menu');
-  for (let step = 0; step < 12; step++) {
+  let dark = 0;
+  for (let step = 0; step < 40; step++) {
     const state = stateOf(shot);
     log(`  state: ${state}`);
     if (state === 'home-row' || state === 'topmenu' || state === 'playmenu' ||
@@ -245,12 +257,29 @@ async function launchSmileBASIC() {
       throw Error(`console is ${state}; a power cycle is required before another launch ` +
         `(frame ${shot.image})`);
     }
-    if (state === 'no-signal') throw Error('console shows no signal; it is off or asleep');
+    // Right after a power-on the console has no signal for a while, so this is a
+    // wait, not a failure - but a minute of it means it never came up.
+    if (state === 'no-signal' || state === 'black') {
+      // The console takes ~40 s to show a picture after the boot press, and it sleeps
+      // ~50 s after its last input - so wait, and nudge it so it does not sleep while
+      // we are waiting for HDMI.
+      dark++;
+      if (dark === 12) {
+        log('  still no picture after 40 s; pressing the power button again');
+        await http(`${FINGERBOT}/press?seconds=${BOOT_PRESS_MS / 1000}`, 30000);
+      }
+      if (dark > 30) throw Error('console never produced a picture after the power cycle');
+      if (dark % 3 === 0) await press('b=1', 60, 300);
+      await sleep(3000);
+      shot = screen('menu-' + step);
+      continue;
+    }
+    dark = 0;
     if (state === 'home-news') {
       log('  leaving the news view (A)');
       await press('a=1', 100, 2500);
     } else {
-      await sleep(3000);                       // black or unknown: HDMI may still settle
+      await sleep(3000);                       // unknown: HDMI may still be settling
     }
     shot = screen('menu-' + step);
   }

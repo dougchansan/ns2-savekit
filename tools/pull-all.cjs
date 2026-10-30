@@ -44,13 +44,24 @@ function accountUids(run) {
 async function main() {
   let argv = process.argv.slice(2);
   const wantCache = argv.includes('--cache');
+  // Targeted first open: the pull tool's space/type sweep is up to 60 opens and is
+  // what wedges a session, so try one combination first and only sweep if it finds
+  // nothing. The indexes must be re-found after each splice (computing both up front
+  // made --type read the wrong element and the pull fail with "--type needs a number").
+  const take = name => {
+    const at = argv.indexOf(name);
+    return at >= 0 ? argv.splice(at, 2)[1] : null;
+  };
+  const onlySpace = take('--space');
+  const onlyType = take('--type');
   const batchIndex = argv.indexOf('--batch');
   const batch = batchIndex >= 0 ? Math.max(1, Number(argv[batchIndex + 1])) : 1;
   if (batchIndex >= 0) argv.splice(batchIndex, 2);
   argv = argv.filter(a => a !== '--cache');
   const [runDirectory, outputDirectory, forcedUid] = argv;
   if (!runDirectory || !outputDirectory) {
-    console.error('usage: node pull-all.cjs <run-directory> <output-directory> [uid-hex] [--cache]');
+    console.error('usage: node pull-all.cjs <run-directory> <output-directory> [uid-hex] ' +
+      '[--batch N] [--space N --type N] [--cache]');
     process.exit(2);
   }
   const run = path.resolve(runDirectory);
@@ -77,25 +88,42 @@ async function main() {
   console.log(batch === 1
     ? 'one archive this session; restart the console afterwards'
     : `batch mode: up to ${batch} archives this session, stopping at the first failure`);
+  const targeted = [onlySpace ?? '1', onlyType ?? '1'];
   for (const appId of queue) {
     const folder = path.join(output, titles.slug(appId));
     console.log(`\nnext: ${titles.label(appId)} -> ${folder}`);
-    let pulled = false, exitCode = 0, absent = false;
-    for (const uid of (uids.length ? uids : [''])) {
-      const args = [run, appId, folder];
-      if (uid) args.push(uid);
-      const result = spawnSync(process.execPath, [path.join(TOOLS, 'save-pull-root.cjs'), ...args],
-        {capture: true, encoding: 'utf8'});
-      process.stdout.write(result.stdout || '');
-      process.stderr.write(result.stderr || '');
-      exitCode = result.status;
-      if (result.status === 0) { pulled = true; break; }
-      // "no save filesystem opened" is a benign absence, not a dropped session.
-      if ((result.stderr || '').includes('No save filesystem opened')) absent = true;
+    let pulled = false, exitCode = 0, absent = false, combination = null;
+    // Attempt 1: the targeted combination. Attempt 2: let the pull tool sweep, which
+    // is what discovers titles whose save is not User/Account (SmileBASIC retail keeps
+    // a Device save). Record whichever combination opened, because that is the
+    // generalisation question: a new title must work without editing the tool.
+    const attempts = [[...targeted], null];
+    for (const attempt of attempts) {
+      for (const uid of (uids.length ? uids : [''])) {
+        const args = [run, appId, folder];
+        if (uid) args.push(uid);
+        if (attempt) args.push('--space', attempt[0], '--type', attempt[1]);
+        const result = spawnSync(process.execPath, [path.join(TOOLS, 'save-pull-root.cjs'), ...args],
+          {capture: true, encoding: 'utf8'});
+        process.stdout.write(result.stdout || '');
+        process.stderr.write(result.stderr || '');
+        exitCode = result.status;
+        const mounted = (result.stderr || '').match(/mounted space=(\S+) type=(\S+)/);
+        if (result.status === 0) { pulled = true; combination = mounted && {space: mounted[1], type: mounted[2]}; break; }
+        // "no save filesystem opened" is a benign absence; anything else can be the
+        // failure that takes the host down, so stop instead of sweeping on.
+        if ((result.stderr || '').includes('No save filesystem opened')) absent = true;
+        else { absent = false; break; }
+      }
+      if (pulled) break;
+      if (!absent) break;                     // a real failure: do not try the sweep
+      absent = false;                         // reset for the sweep attempt
     }
     if (pulled) {
       progress.done.push(appId);
-      console.log(`pulled ${progress.done.length}/${apps.length}`);
+      (progress.combinations ||= {})[appId] = combination || 'unknown';
+      console.log(`pulled ${progress.done.length}/${apps.length}` +
+        (combination ? ` (space=${combination.space} type=${combination.type})` : ''));
     } else {
       progress.absent.push(appId);
       console.log('no save data for this application (0x7d402 for every account/space/type)');
