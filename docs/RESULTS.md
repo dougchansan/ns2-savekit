@@ -1172,3 +1172,57 @@ built from it (`tools/build-untethered.sh` with `BODY`/`EXTRA`, staged and hashe
 The session was lost before `probe-sd.cjs` could run, so `OpenSdCardFileSystem`
 (cmd 18) remains **unmeasured** - and with no microSD Express card inserted there
 would be nothing to open even if the command exists.
+
+## 2026-10-30 14:51: second 4/4, and cmd 18 finally answered
+
+The patched engine produced a second consecutive 4/4 (run `switch2-i1FuBB`, held
+endpoint ready at 14:54:02). So the patch hypothesis now stands at **2/2 boots with
+0001+0002 applied versus 0/5 without**, on the same console and game binary. That is
+still a small sample, but it is no longer a single lucky boot.
+
+### `OpenSdCardFileSystem` (cmd 18): accepted, no filesystem, 0x320002
+
+The first version of `probe-sd.cjs` reported `transport 0xf601` for every id 16-22,
+which is **not an answer about the command**: `0xf601` is what the native `send`
+returns, meaning the request never produced a reply. Two things were wrong:
+
+1. the probe reused the run's `rootHandle`, which is a post-RO artefact and can go
+   stale - a fresh `fsp-srv` session through SM accepts the same calls;
+2. the command packets carried the CMIF `pid` flag, and after one such request the
+   session refuses every later call with `0xf601`.
+
+With the correct shape - a fresh `fsp-srv` session, `Initialize` (cmd 1) with the
+pid, then **cmd 18 with no input and no pid flag** - the answer is:
+
+```
+18: result 0x320002, moves 0
+```
+
+`0x320002` is an FS result (module 1), not a transport failure, and no handle is
+returned. On this console there is no microSD Express card inserted, so the reading
+consistent with every other measurement is "no card to open". What is now proven is
+that the command **exists and is accepted on this firmware (23.0.1)**; what is *not*
+proven is whether it returns a filesystem when a card is present. That still needs a
+card in the slot and one more session.
+
+### The promoted root handle can be stale by the time tools use it
+
+`save-pull-root.cjs` took `rootHandle` from `ro/root/current-root.json` and sent cmd
+53 to it; in run `switch2-i1FuBB` every send returned `0xf601`, while the same engine
+happily enumerated accounts (`acc:u0`, 3 uids) in the same session. A fresh
+`openService('fsp-srv')` + `Initialize` worked for cmd 18 in that same session. So
+`current-root.json` is evidence that the root *was* promoted, not a live handle to
+keep using after the RO stage.
+
+### Two sessions lost, both inside a save-open sweep, with the console alive
+
+`save-pull-root.cjs` sweeps 4 spaces x 5 types x every account uid - up to 60
+`OpenSaveDataFileSystem` calls - before it opens the save it wants. Both attempts to
+pull the Seedsow demo backup died inside that sweep (`SESSION LOST`), and the frames
+show the console **alive in `RPC RUNNING`**, not crashed: the application is wedged
+inside an unresolved IPC, exactly like the stage-2 wedges.
+
+The fix applied to the tool: `--space N --type N` restricts the open to one
+combination (the write tool already opens exactly one, User/Account, and has never
+needed a sweep). The next session should pull with
+`--space 1 --type 1`, which is also what `save-write-stage.cjs` assumes.

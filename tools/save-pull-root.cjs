@@ -42,11 +42,25 @@ async function main() {
   const listUids = argv.includes('--list-uids');
   // Crash investigation knobs: keep the save mounted, keep the session alive.
   const keepOpen = argv.includes('--keep-open');
-  argv = argv.filter(a => a !== '--list-only' && a !== '--list-uids' && a !== '--keep-open');
+  // Targeted open: the space/type sweep below can be up to 60 opens of other
+  // titles' saves, and on this console a sweep is what wedges the session inside
+  // an unresolved IPC call (2026-10-29: two sessions lost that way, console alive
+  // in RPC RUNNING). When the combination is known, open exactly one.
+  const optionValue = name => {
+    const at = argv.indexOf(name);
+    if (at < 0) return null;
+    const value = argv[at + 1];
+    if (!/^[0-9]+$/.test(value)) throw Error(name + ' needs a number');
+    return Number(value);
+  };
+  const onlySpace = optionValue('--space');
+  const onlyType = optionValue('--type');
+  argv = argv.filter((a, i) => a !== '--list-only' && a !== '--list-uids' && a !== '--keep-open' &&
+    a !== '--space' && a !== '--type' && !(i > 0 && ['--space', '--type'].includes(argv[i - 1])));
   const [runDirectory, programText, outputDirectory, forcedUid] = argv;
   if (!runDirectory || !programText || !outputDirectory) {
     console.error('usage: node save-pull-root.cjs <run-directory> <program-id> <output-directory> ' +
-      '[uid-hex] [--list-only]');
+      '[uid-hex] [--space N] [--type N] [--list-only]');
     process.exit(2);
   }
   const run = path.resolve(runDirectory);
@@ -101,8 +115,12 @@ async function main() {
     // Types beyond Account/System matter: some titles (SmileBASIC 4 retail among
     // them) keep their save as a Device save, which an Account-only sweep reports
     // as "no save data".
-    for (const space of [1, 0, 3, 4]) {
-      for (const type of [1, 0, 3, 4, 5]) {
+    const spaces = onlySpace === null ? [1, 0, 3, 4] : [onlySpace];
+    const types = onlyType === null ? [1, 0, 3, 4, 5] : [onlyType];
+    if (onlySpace !== null || onlyType !== null)
+      console.error('targeted open: space=' + spaces.join('/') + ' type=' + types.join('/'));
+    for (const space of spaces) {
+      for (const type of types) {
         for (const uid of uids) {
           const input = Buffer.alloc(0x48);
           input[0] = space;

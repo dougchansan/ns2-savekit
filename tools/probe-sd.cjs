@@ -48,9 +48,8 @@ async function main() {
   const rootProof = JSON.parse(await fsp.readFile(path.join(engine, 'ro/root/current-root.json'), 'utf8'));
   if (rootProof.session !== current.session || rootProof.pid !== 1 || !rootProof.rootHandle)
     throw Error('no promoted fsp-srv root in this run (expected pid 1)');
-  const root = rootProof.rootHandle;
-
-  const {Session} = require(path.join(engine, 'app/session.cjs'));
+  const promoted = rootProof.rootHandle;
+  const {Session, u64} = require(path.join(engine, 'app/session.cjs'));
   const domain = require(path.join(engine, 'app/domain.cjs'));
   const filesystem = require(path.join(engine, 'app/filesystem.cjs'));
   await request(current.socketPath, {command: 'root-native-info'});
@@ -58,32 +57,49 @@ async function main() {
   const s = new Session('probe-sd-' + Date.now(), 0x80000);
   s.record = async () => {};
   await s.initialize();
+  // Two candidate sessions: a fresh fsp-srv opened through SM, and the promoted
+  // root the acquisition left behind. The promoted handle is a post-RO artefact
+  // and can answer `transport 0xf601` (the send itself refused) rather than a
+  // command result, which is not an answer about the command; a fresh session
+  // distinguishes "command refused" from "handle stale".
+  const candidates = [];
   try {
-    for (let command = first; command <= last; command++) {
-      let reply;
-      try {
-        reply = await s.ipc('sd cmd ' + command, root, command, Buffer.alloc(0));
-      } catch (error) {
-        console.log(command + ': ' + error.message.slice(0, 60));
-        continue;
-      }
-      const result = Number(reply.canonicalResult ?? reply.result) & 0x3fffff;
-      console.log(command + ': ' + code(result) +
-        (reply.moves.length ? ' handle' : '') + (reply.copies.length ? ' copy' : ''));
-      if (result || reply.moves.length !== 1) continue;
-      const handle = reply.moves[0];
-      // Anything that opened gets asked for a directory listing.
-      try {
-        const entries = await filesystem.listDirectory(s, handle, '/', 24);
-        console.log('   -> ' + entries.length + ' entries');
-        for (const entry of entries.slice(0, 10)) {
-          console.log('      ' + (entry.type === 1 ? '<dir> ' : String(entry.size).padStart(9) + ' ') + entry.name);
+    const fsp = await s.openService('fsp-srv');
+    const init = await s.ipc('Initialize fsp-srv', fsp, 1, u64(0), {pid: true});
+    console.error('fresh fsp-srv: ' + (init.result ? 'init ' + code(init.result) : 'initialized'));
+    if (!init.result) candidates.push({label: 'fresh fsp-srv', handle: fsp});
+  } catch (error) {
+    console.error('fresh fsp-srv unavailable: ' + error.message.slice(0, 80));
+  }
+  candidates.push({label: 'promoted root', handle: promoted});
+
+  try {
+    for (const candidate of candidates) {
+      for (let command = first; command <= last; command++) {
+        let reply;
+        try {
+          reply = await s.ipc('sd cmd ' + command, candidate.handle, command, Buffer.alloc(0));
+        } catch (error) {
+          console.log(candidate.label + ' ' + command + ': ' + error.message.slice(0, 60));
+          continue;
         }
-      } catch (error) {
-        console.log('   -> opened, listing failed: ' + error.message.slice(0, 60));
+        const result = Number(reply.canonicalResult ?? reply.result) & 0x3fffff;
+        console.log(candidate.label + ' ' + command + ': ' + code(result) +
+          (reply.moves.length ? ' handle' : '') + (reply.copies.length ? ' copy' : ''));
+        if (result || reply.moves.length !== 1) continue;
+        const handle = reply.moves[0];
+        try {
+          const entries = await filesystem.listDirectory(s, handle, '/', 24);
+          console.log('   -> ' + entries.length + ' entries');
+          for (const entry of entries.slice(0, 10)) {
+            console.log('      ' + (entry.type === 1 ? '<dir> ' : String(entry.size).padStart(9) + ' ') + entry.name);
+          }
+        } catch (error) {
+          console.log('   -> opened, listing failed: ' + error.message.slice(0, 60));
+        }
+        await s.close(handle).catch(() => {});
+        break;
       }
-      await s.close(handle).catch(() => {});
-      break;
     }
   } finally {
     await s.cleanup().catch(() => {});
