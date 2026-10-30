@@ -25,6 +25,13 @@ const WIDTH = 40;
 const HEIGHT = 69;
 const ICON_BYTES = WIDTH * HEIGHT * 4;
 const NAME_TAG = 'PCPM0005';
+// The name lives in one 32-byte block at NAME_BLOCK: the 8-byte tag plus a
+// NUL-terminated UTF-16 name. [WORKSPACE] fills it exactly (11 chars = 22 bytes +
+// 2), so 22 bytes is the measured capacity. '--allow-overlap' can write past it,
+// which overwrites the thumbnail's first pixels - measured to be a black margin in
+// this sample, but not proven harmless on the console.
+const NAME_BLOCK = 32;
+const NAME_CAPACITY = NAME_BLOCK - NAME_TAG.length - 2;
 
 function parse(buffer) {
   const info = {size: buffer.length, headerWords: [], name: null, nameOffset: null,
@@ -44,7 +51,9 @@ function parse(buffer) {
     info.nameOffset = start;
     info.nameBytes = end - start;
     info.name = buffer.toString('utf16le', start, end);
-    info.nameCapacity = info.nameBytes;
+    // Capacity is the block's, not the current string's: deriving it from the name
+    // made a shorter name shrink the slot and a later longer write be refused.
+    info.nameCapacity = NAME_CAPACITY;
   }
   if (buffer.length >= HEADER + ICON_BYTES) {
     info.icon = {offset: HEADER, width: WIDTH, height: HEIGHT, bytes: ICON_BYTES};
@@ -147,20 +156,23 @@ function diff(fileA, fileB) {
 // Rewrite the NUL-terminated UTF-16 name in place. The slot is whatever the file
 // already has: growing it would move the icon and change the file size, which the
 // save write must not do.
-function setName(file, name) {
+function setName(file, name, allowOverlap = false) {
   const buffer = fs.readFileSync(file);
   const info = parse(buffer);
   if (info.nameOffset === null) throw Error('no PCPM0005 name slot in ' + file);
   const encoded = Buffer.from(name, 'utf16le');
-  if (encoded.length > info.nameCapacity) {
+  const capacity = allowOverlap ? NAME_BLOCK * 8 : info.nameCapacity;
+  if (encoded.length > capacity) {
     throw Error(`name ${JSON.stringify(name)} needs ${encoded.length} bytes but the slot holds ` +
-      `${info.nameCapacity}; keeping the file size fixed is required`);
+      `${capacity} (${Math.floor(capacity / 2)} UTF-16 characters); pass --allow-overlap to ` +
+      'write past the block, which overwrites thumbnail pixels');
   }
-  const slot = Buffer.alloc(info.nameCapacity + 2);       // + the terminating NUL
+  const slot = Buffer.alloc(capacity + 2);                // + the terminating NUL
   encoded.copy(slot, 0);
   slot.copy(buffer, info.nameOffset);
   fs.writeFileSync(file, buffer);
-  console.log(`name -> ${JSON.stringify(name)} (${encoded.length}/${info.nameCapacity} bytes)`);
+  console.log(`name -> ${JSON.stringify(name)} (${encoded.length}/${capacity} bytes)` +
+    (allowOverlap ? ' - overlapping thumbnail pixels' : ''));
 }
 
 function setIcon(file, png) {
@@ -202,11 +214,12 @@ function main() {
     const pngAt = rest.indexOf('--png');
     dump(rest[0], pngAt >= 0 ? rest[pngAt + 1] : null);
   } else if (verb === 'diff') diff(rest[0], rest[1]);
-  else if (verb === 'name') setName(rest[0], rest.slice(1).join(' '));
+  else if (verb === 'name') setName(rest[0],
+    rest.slice(1).filter(a => a !== '--allow-overlap').join(' '), rest.includes('--allow-overlap'));
   else if (verb === 'icon') setIcon(rest[0], rest[1]);
   else {
     console.error('usage: smb-meta.cjs dump <META> [--png out.png] | diff <a> <b> | ' +
-      'name <META> <text> | icon <META> <png>');
+      'name <META> <text> [--allow-overlap] | icon <META> <png>');
     process.exit(2);
   }
 }
