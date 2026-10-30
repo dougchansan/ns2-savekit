@@ -466,6 +466,7 @@ title and choose `7`. The order is always **back up → write → restart → ve
 | what you see | what it means | what to do |
 | --- | --- | --- |
 | `0x7d402` for every account | the game has not made a save yet | launch the demo and close it fully, then retry |
+| `could not tell whether … has save data` / `exited without listing anything` | the read-only probe never listed an archive. An older `save-pull-root.cjs` treated every flag as set, so `--list-only` printed the account uids, exited 0 and stopped; the kit used to report that as `0x7d402` for every title (issue #2) | update the tools; the kit now names this instead of calling the save absent |
 | `Directory exceeds the N-entry probe limit` | your copy predates the 2048-entry limit | raise it in `tools/save-pull-root.cjs` and `tools/save-write-stage.cjs` |
 | `could not list installed applications` / `could not list accounts` | one of `inventory.cjs`'s two enumerations failed; the lines under it are the child's own error and a hint (older copies printed the catch-all `could not list applications or accounts`) | follow the hint; an account failure can be worked around with `node tools/inventory.cjs <run> <uid>` |
 | `EEXIST …-ncm-system-programs.bin` | the engine checkout is unpatched | `sh patches/apply.sh /path/to/ns2jb`, then start a new run - an existing run folder keeps the old engine copy |
@@ -544,9 +545,14 @@ tests/     offline suites; none of them prove console behaviour:
              lua  tests/test_artwork_lua.lua      chooser selection (8)
              node tests/test_console_state.cjs    screen classification (9)
              sh   tests/test_inject_dryrun.sh     injection builder/manifest (3)
+             node tests/test_inventory.cjs        inventory reporting (7)
+             node tests/test_save_attr.cjs        save attribute packing (9)
+             node tests/test_titles.cjs           name fallbacks (5)
+             node tests/test_kit_probe.cjs        kit save detection (5)
              node tests/test_harness_guard.cjs    session/power-cycle rules (5)
              node tests/test_harness_powercycle.cjs  mock console, power-cycle (2)
              node tests/test_harness_sequence.cjs   mock console, whole cycle (5)
+             node tests/test_restore_manifest.cjs   generic restore path (6)
              python3 tests/test_offline.py        save/ASB encoders (8)
 ```
 

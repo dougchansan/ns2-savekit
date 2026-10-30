@@ -40,9 +40,25 @@ async function main() {
     process.argv.slice(2);
   if (!runDirectory || !programText || !uidText || !verifyDirectory || !manifestPath) {
     console.error('usage: node save-write-stage.cjs <run-directory> <program-id> <uid-hex> ' +
-      '<backup-directory> <manifest.json>');
+      '<backup-directory> <manifest.json> [--space N] [--type N] [--restore] [--confirm-restore]');
     process.exit(2);
   }
+  // Space/type make this work outside User/Account (Sports Resort is a Device save);
+  // --restore is what lets it put an older save back, which means replacing live bytes
+  // that deliberately differ from the backup. That needs an explicit second flag.
+  const flag = name => process.argv.includes(name);
+  const option = name => {
+    const at = process.argv.indexOf(name);
+    if (at < 0) return null;
+    const text = process.argv[at + 1];
+    if (!/^[0-9]+$/.test(text || '')) throw Error(name + ' needs a number');
+    return Number(text);
+  };
+  const space = option('--space') ?? 1;
+  const type = option('--type') ?? 1;
+  const restore = flag('--restore');
+  if (restore) check(flag('--confirm-restore'),
+    '--restore overwrites live save data; pass --confirm-restore after the backup');
   const run = path.resolve(runDirectory);
   const engine = path.join(run, 'switch2');
   const current = JSON.parse(await fs.readFile(path.join(engine, 'current-acquisition.json'), 'utf8'));
@@ -61,10 +77,11 @@ async function main() {
   const jobs = [];
   for (const entry of manifest.files) {
     const bytes = await fs.readFile(entry.local);
-    check(entry.path === '/' + path.posix.basename(entry.path) && !entry.path.includes('..'),
-      'Only files directly under the save root are allowed: ' + entry.path);
-    jobs.push({name: path.posix.basename(entry.path), path: entry.path, bytes,
-      replace: entry.replace === true});
+    check(entry.path.startsWith('/') && !entry.path.includes('..') && !entry.path.includes('\0'),
+      'Invalid save path: ' + entry.path);
+    const rel = entry.path.slice(1);
+    jobs.push({name: rel, path: entry.path, bytes, replace: entry.replace === true,
+      local: path.join(verifyDirectory, rel)});
   }
 
   // --- guardrails: disposable titles only, user space only, add-only, backed up ---
@@ -87,12 +104,12 @@ async function main() {
   const backupFiles = await fs.readdir(verifyDirectory).catch(() => []);
   check(backupFiles.length > 0, 'Backup directory is empty: ' + verifyDirectory);
   for (const job of jobs) {
+    const inBackup = await fs.stat(job.local).then(st => st.isFile()).catch(() => false);
     if (job.replace) {
-      check(backupFiles.includes(job.name),
-        'Cannot replace ' + job.name + ': the backup does not contain a copy to compare');
+      check(inBackup, 'Cannot replace ' + job.path +
+        ': the backup does not contain a copy to compare');
     } else {
-      check(!backupFiles.includes(job.name),
-        'Refusing to add ' + job.name + ': the backup already contains it');
+      check(!inBackup, 'Refusing to add ' + job.path + ': the backup already contains it');
     }
   }
 
@@ -103,10 +120,10 @@ async function main() {
 
   const openSave = async command => {
     const input = Buffer.alloc(0x48);
-    input[0] = 1;                       // SaveDataSpaceId_User
+    input[0] = space;                   // SaveDataSpaceId (1 User, 4 SdUser)
     input.writeBigUInt64LE(programId, 8);
     uid.copy(input, 0x10);
-    input[0x28] = 1;                    // SaveDataType_Account
+    input[0x28] = type;                 // SaveDataType (1 Account, 3 Device)
     const reply = await s.ipc(command === 51 ? 'Open save read-write' : 'Open save read-only',
       root, command, input);
     check(!reply.result && reply.moves.length === 1,
@@ -173,25 +190,33 @@ async function main() {
   try {
     // Add-only: confirm the target does not already exist before opening read-write.
     save = await openSave(53);
-    const existing = await filesystem.listDirectory(s, save, '/', 2048);
     for (const job of jobs) {
-      const present = existing.find(entry => entry.name === job.name);
+      const opened = await filesystem.openFile(s, save, job.path);
+      const present = !opened.result;
       if (!present) {
         check(!job.replace, 'Cannot replace ' + job.path + ': it is not in the save');
         continue;
       }
       check(job.replace, 'Refusing to overwrite existing save file ' + job.path);
-      // Only replace a file that still matches the backup we were given.
-      const opened = await filesystem.openFile(s, save, job.path);
+      // Replace-mode compares against the backup; restore-mode deliberately does not.
       check(!opened.result, 'Cannot open ' + job.path + ' to compare it');
       try {
         const size = Number(await filesystem.fileSize(s, opened.handle));
         const live = await filesystem.readFile(s, opened.handle, 0, size);
-        const backup = await fs.readFile(path.join(verifyDirectory, job.name));
-        check(sha(live) === sha(backup),
-          'Live ' + job.path + ' differs from the backup; refusing to replace');
-        console.log('replace ok: live ' + job.path + ' matches the backup ('
-          + sha(backup).slice(0, 16) + '...)');
+        const backup = await fs.readFile(job.local);
+        if (restore) {
+          // Say exactly what changes: with --restore this log line is the record of
+          // the overwrite, and the caller's pre-restore backup is the way back.
+          console.log('restore: ' + job.path + ' live ' + live.length + 'B ' +
+            sha(live).slice(0, 16) + '... -> ' + backup.length + 'B ' +
+            sha(backup).slice(0, 16) + '...');
+        } else {
+          check(sha(live) === sha(backup),
+            'Live ' + job.path + ' differs from the backup; refusing to replace ' +
+            '(use --restore --confirm-restore to put a backup back)');
+          console.log('replace ok: live ' + job.path + ' matches the backup ('
+            + sha(backup).slice(0, 16) + '...)');
+        }
       } finally {
         await s.close(opened.handle).catch(() => {});
       }
@@ -201,6 +226,16 @@ async function main() {
     await s.close(save); save = null;
 
     save = await openSave(51);
+    // Parent directories first: Nora keeps /debug/lua/index.lua. Already-exists replies
+    // are expected here; a real failure shows up on the file write itself.
+    for (const job of jobs) {
+      const parts = job.path.split('/').filter(Boolean);
+      let prefix = '';
+      for (let i = 0; i < parts.length - 1; i++) {
+        prefix += '/' + parts[i];
+        await filesystem.pathMethod(s, save, 1, prefix, Buffer.alloc(0)).catch(() => {});
+      }
+    }
     for (const job of jobs) {
       console.log('mounted read-write; writing', job.path, job.bytes.length,
         'bytes (sha256 ' + sha(job.bytes).slice(0, 16) + '...)');
@@ -211,31 +246,23 @@ async function main() {
     check(!commit.result, 'Commit failed');
     await s.close(save); save = null;
 
-    // Re-open read-only and verify. This releases the write mount and proves
-    // the committed bytes are what a later reader will see.
+    // Re-open read-only and verify by path: a nested file has to be read at its own
+    // path, and this is the check that proves the committed bytes are readable.
     save = await openSave(53);
-    const listing = await filesystem.listDirectory(s, save, '/', 2048);
-    const expected = Object.fromEntries((await fs.readdir(verifyDirectory)).map(name =>
-      [name, path.join(verifyDirectory, name)]));
-    const written = Object.fromEntries(jobs.map(job => [job.name, sha(job.bytes)]));
-    for (const entry of listing) {
-      const opened = await filesystem.openFile(s, save, '/' + entry.name);
-      if (opened.result) {
-        // Directories cannot be opened as files; report and move on.
-        console.log(`  ${entry.name.padEnd(14)} <not a file: ${code(opened.result)}>`);
-        continue;
-      }
+    let mismatches = 0;
+    for (const job of jobs) {
+      const opened = await filesystem.openFile(s, save, job.path);
+      check(!opened.result, 'Verify could not open ' + job.path + ': ' + code(opened.result));
       const size = Number(await filesystem.fileSize(s, opened.handle));
       const bytes = await filesystem.readFile(s, opened.handle, 0, size);
       await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
-      let expectedHash = null;
-      if (expected[entry.name]) expectedHash = sha(await fs.readFile(expected[entry.name]));
-      const match = expectedHash ? (expectedHash === sha(bytes) ? 'ok' : 'DIFFERS') : 'n/a';
-      const tag = written[entry.name]
-        ? '(' + (written[entry.name] === sha(bytes) ? 'written ok' : 'WRITE MISMATCH') + ')'
-        : '';
-      console.log(`  ${entry.name.padEnd(14)} ${String(size).padStart(7)}  ${sha(bytes).slice(0, 16)}  ${tag} ${match}`);
+      const got = sha(bytes);
+      const ok = got === sha(job.bytes) && size === job.bytes.length;
+      if (!ok) mismatches++;
+      console.log('  ' + job.path.padEnd(30) + String(size).padStart(8) + '  ' +
+        got.slice(0, 16) + '  ' + (ok ? 'ok' : 'MISMATCH'));
     }
+    check(mismatches === 0, mismatches + ' file(s) did not read back as written');
   } finally {
     if (save !== null) await s.close(save).catch(() => s.handles.delete(save));
     await s.cleanup().catch(() => {});
