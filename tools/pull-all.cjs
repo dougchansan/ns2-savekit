@@ -92,13 +92,12 @@ async function main() {
   for (const appId of queue) {
     const folder = path.join(output, titles.slug(appId));
     console.log(`\nnext: ${titles.label(appId)} -> ${folder}`);
-    let pulled = false, exitCode = 0, absent = false, combination = null;
+    let pulled = false, combination = null, absent = false, lost = false;
     // Attempt 1: the targeted combination. Attempt 2: let the pull tool sweep, which
-    // is what discovers titles whose save is not User/Account (SmileBASIC retail keeps
-    // a Device save). Record whichever combination opened, because that is the
-    // generalisation question: a new title must work without editing the tool.
-    const attempts = [[...targeted], null];
-    for (const attempt of attempts) {
+    // discovers titles whose save is not User/Account (SmileBASIC retail keeps a Device
+    // save, and the title hosting the exploit answers 0xe02 because it holds the save).
+    // Record whichever combination opened, because that is the generalisation question.
+    for (const attempt of [[...targeted], null]) {
       for (const uid of (uids.length ? uids : [''])) {
         const args = [run, appId, folder];
         if (uid) args.push(uid);
@@ -107,32 +106,35 @@ async function main() {
           {capture: true, encoding: 'utf8'});
         process.stdout.write(result.stdout || '');
         process.stderr.write(result.stderr || '');
-        exitCode = result.status;
-        const mounted = (result.stderr || '').match(/mounted space=(\S+) type=(\S+)/);
-        if (result.status === 0) { pulled = true; combination = mounted && {space: mounted[1], type: mounted[2]}; break; }
-        // "no save filesystem opened" is a benign absence; anything else can be the
-        // failure that takes the host down, so stop instead of sweeping on.
-        if ((result.stderr || '').includes('No save filesystem opened')) absent = true;
-        else { absent = false; break; }
+        const err = result.stderr || '';
+        const mounted = err.match(/mounted (space=\S+ type=\S+)/);
+        if (result.status === 0 && !/^listed /m.test(result.stdout || '')) {
+          pulled = true;
+          combination = mounted ? mounted[1] : 'unknown';
+          break;
+        }
+        // A dropped session is the only thing worth stopping for: it is the failure that
+        // takes the host down. "No save data" is a benign absence and the batch
+        // continues; anything else is treated as a real error for this title only.
+        if (/SESSION LOST|timed out|closed the session|not ready/i.test(err)) { lost = true; break; }
+        absent = /No save filesystem opened|0x7d402/.test(err);
+        if (!absent) break;
       }
-      if (pulled) break;
-      if (!absent) break;                     // a real failure: do not try the sweep
-      absent = false;                         // reset for the sweep attempt
+      if (pulled || lost || !absent) break;
+      absent = false;                          // try the sweep for this title
     }
     if (pulled) {
       progress.done.push(appId);
       (progress.combinations ||= {})[appId] = combination || 'unknown';
-      console.log(`pulled ${progress.done.length}/${apps.length}` +
-        (combination ? ` (space=${combination.space} type=${combination.type})` : ''));
+      console.log(`pulled ${progress.done.length}/${apps.length} (${combination})`);
+    } else if (lost) {
+      console.log('session lost - stopping so the console can be restarted');
     } else {
       progress.absent.push(appId);
-      console.log('no save data for this application (0x7d402 for every account/space/type)');
+      console.log('no save data for this application (0x7d402 on every space/type tried)');
     }
     await fsp.writeFile(progressFile, JSON.stringify(progress, null, 2) + '\n');
-    if (!pulled && !absent && exitCode !== 0) {
-      console.log('stopping the batch: that failure is the one that can take the host down');
-      break;
-    }
+    if (lost) break;
   }
   const left = apps.length - progress.done.length - progress.absent.length;
   console.log(left === 0

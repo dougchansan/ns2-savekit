@@ -32,8 +32,17 @@ function main() {
   }
   const at = process.argv.indexOf('--manifest-json');
   const manifest = JSON.parse(at >= 0 ? process.argv[at + 1] : fs.readFileSync(manifestArg, 'utf8'));
-  const entries = Array.isArray(manifest) ? manifest : manifest.files || manifest.entries || [];
-  if (!entries.length) throw Error('manifest has no file entries');
+  // save-pull-root writes {files: <count>, bytes, entries: [...]}, where `files` is a
+  // number - so the array has to be found by shape, not by name.
+  const entries = Array.isArray(manifest) ? manifest
+    : Array.isArray(manifest.entries) ? manifest.entries
+    : Array.isArray(manifest.files) ? manifest.files : [];
+  if (!entries.length) {
+    console.log(manifest.files === 0
+      ? 'EMPTY    the archive opened and holds no files (a save the account never wrote)'
+      : 'EMPTY    the manifest lists no files');
+    process.exit(0);
+  }
 
   const problems = [];
   const expected = new Set();
@@ -54,6 +63,8 @@ function main() {
   }
   if (!manifest.partial) {
     for (const name of listFiles(directory)) {
+      // The manifest lives in the archive it describes, so it is never "extra".
+      if (name === '/manifest.json') continue;
       if (!expected.has(name)) problems.push(`extra    ${name}`);
     }
   }

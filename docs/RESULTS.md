@@ -1805,3 +1805,49 @@ session can reach**, and per the one-RPC-per-boot rule no further session is pos
 until it is. The remaining milestones - pinned-repeat boot, backup pull, META/PLAYMENU
 rename, injection, payload-v1 message capture - are all built, tested offline, and
 waiting on that one physical action.
+
+## 2026-10-30 18:30: every installed save pulled, and the tool was silently doing nothing
+
+With the arm reseated and travel set to **100** (95 no longer reaches the button), a
+single boot ran the whole cycle unattended and reached 4/4, then `--after` pulled saves
+inside that one session.
+
+| title | files | size | hashes | opened as |
+| --- | --- | --- | --- | --- |
+| Seedsow Lullaby (demo) | 289 | 4.4 MiB | 289/289 | space=User type=Account |
+| Seedsow Lullaby (full) | 75 | 2.0 MiB | 75/75 | space=User type=Account |
+| Mario Kart World | 1 | 844 KiB | 1/1 | space=User type=Account |
+| Nintendo Switch Sports Resort | 1 | 572 KiB | 1/1 | **space=User type=Device**, uid 000… |
+| Nora to Oujo to Noraneko Heart 2 (trial) | 10 | 151 KiB | 10/10 | space=User type=Account |
+| SmileBASIC 4 (demo) | 5 | 35 KiB | 5/5 | space=User type=Account |
+| Pokemon Sword + Expansion Pass | 0 | 0 | – | space=User type=Account, **empty archive** |
+| Wagamama High Spec (trial) | – | – | – | absent (0x7d402 everywhere) |
+| SmileBASIC 4 (retail) | – | – | – | not readable: it hosts the exploit and holds its own save |
+
+7 archives, 381 files, 8,341,142 bytes, every non-empty one re-verified against a
+SHA-256 manifest written during the copy (`tools/verify-save-manifest.cjs`).
+
+### The pull tool was a no-op, and it reported success
+
+The first run of `pull-all` claimed "pulled 6/9" with **zero files on disk**. Cause: a
+rewrite of `save-pull-root.cjs` had introduced `const flags = new Set([...known flag
+names...])` and then tested `flags.has('--list-uids')`, `flags.has('--list-only')`,
+`flags.has('--keep-open')` and `flags.has('--all')`. Testing membership of the *known*
+set is constant, so every invocation behaved as all four flags at once: it printed the
+account uids, listed, returned 0, and pull-all recorded a success. Two consequences
+worth keeping: a green exit code is not evidence, and the archive is only real when
+the files and their hashes are.
+
+Also fixed: `pull-all` now treats "no save data" as an absent title and only stops on a
+dropped session; it tries the targeted combination first and falls back to the pull
+tool's sweep, recording the space/type that opened each title.
+
+### What this says about generalising (and about Breath of the Wild)
+
+The two limits that would matter for a large title are in the transfer, not in the
+tool: files are read in 0x40000-byte chunks with a console-computed hash per chunk,
+and a directory read is capped at 2048 entries. Both were exercised here (a 4.4 MiB
+archive with 289 files), but a save with a very large single file or more than 2048
+entries in one directory has not been. Nintendo Switch Sports Resort proves the
+space/type discovery works: its save is a **Device** save with an all-zero uid, which
+a User/Account-only tool would have reported as "no save data".
