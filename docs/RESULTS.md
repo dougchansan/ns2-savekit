@@ -1431,3 +1431,29 @@ the sweep would have found a slot; something about the console or the applicatio
 heap state changed between those boots and now. The next measurement should compare a
 successful boot's row (the `cases` array in the report) against a failing one for the
 same profile, rather than extending the sweep further.
+
+### The success signature: many waves, and the first window looks the same
+
+The run folders on this machine still contain **39 successful acquisitions** from
+2026-10-27/28, and they answer a question the failing runs cannot: what does a
+successful report look like?
+
+| run | cases in the report | markerSelected | first positive row |
+| --- | --- | --- | --- |
+| `uy0bDz` (success) | **42** | true | margin 1428, selected false, type 0, result 0, changed `["canary"]` |
+| `i1FuBB` (success) | **38** | true | margin 2345, selected false, type 0, result 0, changed `["canary"]` |
+| `LG83Yh` (failure) | 11 | *unset* (crashed) | margin 2580, selected false, type 0, result 0, changed `["canary"]` |
+
+Two readings:
+
+- the *first* positive window in a failing run has exactly the shape of the first
+  positive window in a successful one, so the discriminator is not the window's
+  appearance at the base offset - the successful run simply kept going (**38-55
+  cases** against 9-11 in the failures) until a later wave qualified;
+- that makes the earlier "commit to the first window" behaviour the real defect, and
+  the widened, in-range, bidirectional sweep the right shape of fix. It also means
+  today's failures were ending runs that the successful ones would have continued.
+
+So the next boot is a fair test of the fixed sweep rather than another identical
+retry. If it still fails, the comparison to make is against a successful run's
+*qualified* row (`selectedMarker: true`), not its first window.
