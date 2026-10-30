@@ -536,8 +536,13 @@ config/    write allowlist template (local config files are gitignored)
 docs/      TECHNICAL.md (mechanism + IPC layout), RESULTS.md (hardware evidence
            and the untethered roadmap), SAVE-ARCHIVES.md (which archive the open
            call selects), PATCHED-ENGINE.md (the required engine patches)
-tests/     offline round-trip, manifest, title-name, save-attribute and
-           inventory-reporting tests (do not prove console behaviour)
+tests/     offline suites; none of them prove console behaviour:
+             node tests/test_nso_verify.cjs       NSO0 parsing, LZ4, hashes (13)
+             node tests/test_smb_meta.cjs         META name block surgery (7)
+             lua  tests/test_payload_lua.lua      payload v1 decisions (13)
+             lua  tests/test_metadata_lua.lua     name/thumbnail writer (15)
+             lua  tests/test_artwork_lua.lua      chooser selection (8)
+             python3 tests/test_offline.py        save/ASB encoders (8)
 ```
 
 ## Licence and third parties
