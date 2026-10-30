@@ -1329,3 +1329,58 @@ STEP extent-marker
 `root` there is the promoted fsp-srv session, and cmd 200 is a non-standard id, so
 "the command never returns" is the first thing to test rather than assume. The next
 boot's log names which of the two blocks.
+
+## 2026-10-29 16:09-16:20: fast failures, and the canary window types
+
+Two changes made failed boots cheap instead of expensive, and the instrumented log
+localised the remaining failure to the canary qualification.
+
+### Failures now cost minutes, not half an hour
+
+`acquire.cjs` defaulted to `MAX_ATTEMPTS = 3` with a 10-minute deadline each, so a
+boot that was going to fail spent up to ~30 minutes failing. Measured: a success
+takes 4-5 minutes and a stalled attempt produces no new step marker for minutes.
+Both are now configurable and default to **one attempt, 7-minute budget**
+(`NS2_ACQUIRE_ATTEMPTS`, `NS2_ACQUIRE_BUDGET_MS`). Observed after the change:
+
+| try | boot | acquisition | outcome |
+| --- | --- | --- | --- |
+| 1 | 16:10 | 16:12:34 -> 16:13:34 | canary miss, **1 min** |
+| 2 | 16:14 | 16:16:21 -> 16:19:45 | canary miss, **3.5 min** |
+
+### The gap-content phase is not the block
+
+The markers added last round answered it:
+
+```
+STEP extent-marker
+STEP open-gap-content            <- returned
+STEP storage-size
+STEP storage-size-ok 144827272   <- 144,827,272 bytes
+```
+
+So `Open own gap content` (fsp-srv cmd 200 on the promoted root) and the storage-size
+query both work; the earlier 6-minute silence at `extent-marker` was the *next*
+phase. That rules out the command-id and stale-handle hypotheses for this stall.
+
+### The canary sweep stops at the first window, whatever its type
+
+The acquisition's positive sweep walks the marker offset in 0x30-byte steps and
+breaks at the first row that shows a receive-order window. What those windows looked
+like:
+
+| try | offset | canaryType | changed | window | result |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 0x2340 | 1 | [] | false | skip |
+| 1 | 0x2370 | **null** | `["canary"]` | true | committed -> `markerSelected false` |
+| 2 | 0x2340 | **0** | `["canary"]` | true | committed -> miss |
+
+The qualification wants an *owned* canary (`canaryResult === 0 && canaryType === 1`),
+so a null-typed window can never satisfy it - but the sweep committed to it anyway.
+It now keeps sweeping past a null-typed window. This cannot turn a passing case into
+a failing one: if every offset is null the run ends at the same failure with the last
+offset, and a typed window is still accepted exactly as before.
+
+What is *not* yet explained is try 2's `type=0` window at the first offset. If the
+same offset keeps producing type 0, the qualification may need a rule for it too -
+that is the next thing to measure rather than guess.
