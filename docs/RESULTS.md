@@ -1892,3 +1892,42 @@ if it were. What it needs is a look at what the leaked range actually contains
 stale block, or something the candidate filter is too strict about - and the host
 title cannot be swapped to change the layout: the bootstrap's stage 1 validates the
 retail SDK (`sdkCrc32 3925528160`), so the demo build would fail there instead.
+
+## 2026-10-30 21:29: the launcher is in the save, hash-verified
+
+The 21:23 boot reached 4/4 with **no acquisition error** - the first boot to pass the
+native-link phase - and `inject-launcher.sh` ran inside that session:
+
+```
+1/4 backing up 010042d022aea000     -> saves/Seedsow-Lullaby-demo-backup-20261029-212538 (290 entries)
+2/4 building the launcher set       5 files, 43,970 bytes
+3/4 writing the set (one transaction)
+     mounted read-write; writing /nso-verify.lua 4693 bytes
+     nso-verify.lua  4693  (written ok)
+     save9999.dat   28405  (written ok) ok
+     ns2jb.lua       4463  (written ok) DIFFERS   <- replaced, as intended
+     ns2jb.asb       1946  (written ok) ok
+     sscode004.lua   4463  (written ok) DIFFERS   <- replaced, as intended
+4/4 pulling the result and hashing it
+```
+
+The final step first reported `FAILED 285 problem(s) against 5 manifest entries`, which
+was the verifier's fault, not the write's: a five-file manifest injected into a save
+that already holds 290 files made every other file look "extra". `verify-save-manifest`
+now checks the manifest's entries by default and only flags extras under `--strict`.
+With that fixed, the pulled save verifies:
+
+```
+ok       /ns2jb.asb (1946 bytes)
+ok       /save9999.dat (28405 bytes)
+ok       /ns2jb.lua (4463 bytes)
+ok       /sscode004.lua (4463 bytes)
+ok       /nso-verify.lua (4693 bytes)
+VERIFIED 5 files, 43970 bytes from the manifest
+```
+
+So the Seedsow demo save now contains the stub, the retargeted suspend launcher, the
+launcher body in both places it is read from, and the NSO verifier - read back from the
+console and hashed. This is an in-place replace/add, not a literal wipe: the game's own
+290-file save is kept because the engine needs it to boot. The backup was taken as the
+session's first operation, so the pre-injection state is on disk.

@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 // Check a pulled save directory against the manifest that was written into it.
 //
-//   node tools/verify-save-manifest.cjs <save-directory> <manifest.json>
+//   node tools/verify-save-manifest.cjs <save-directory> <manifest.json> [--strict]
 //   node tools/verify-save-manifest.cjs <save-directory> --manifest-json '<json>'
+//
+// By default only the manifest's own entries are checked: a manifest may describe five
+// files injected into a save that already holds 290, and calling the other 285 "extra"
+// is wrong. --strict additionally requires the pull to contain nothing else, which is
+// only meaningful for a manifest that describes a whole archive.
 //
 // This is the after-the-fact half of "verify every file by hash": the write tool
 // hashes what it read back from the console, and this hashes what a later *pull*
@@ -25,7 +30,8 @@ function listFiles(directory, prefix = '') {
 }
 
 function main() {
-  const [directory, manifestArg, jsonArg] = process.argv.slice(2);
+  const strict = process.argv.includes('--strict');
+  const [directory, manifestArg] = process.argv.slice(2).filter(a => a !== '--strict');
   if (!directory || (!manifestArg && !process.argv.includes('--manifest-json'))) {
     console.error('usage: node verify-save-manifest.cjs <save-directory> <manifest.json>');
     process.exit(2);
@@ -61,7 +67,7 @@ function main() {
     else if (sha !== want) problems.push(`hash     /${relative} ${sha.slice(0, 16)}… != ${want.slice(0, 16)}…`);
     else console.log(`ok       /${relative} (${bytes.length} bytes)`);
   }
-  if (!manifest.partial) {
+  if (strict && !manifest.partial) {
     for (const name of listFiles(directory)) {
       // The manifest lives in the archive it describes, so it is never "extra".
       if (name === '/manifest.json') continue;
