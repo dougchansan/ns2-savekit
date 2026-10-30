@@ -10,7 +10,10 @@ set -eu
 base=${1:?usage: build-untethered.sh <backup-directory> <output-directory>}
 out=${2:?usage: build-untethered.sh <backup-directory> <output-directory>}
 here=$(dirname "$0")
-body="$here/../payloads/ns2jb.lua"
+# BODY picks the program the stub runs; EXTRA names one more payload file to ship
+# beside it (the launcher ships its NSO verifier this way).
+body="${BODY:-$here/../payloads/ns2jb.lua}"
+extra="${EXTRA:-}"
 stub="$here/../payloads/ns2jb-stub.lua"
 mkdir -p "$out"
 # The suspend launcher is a retargeted copy of a real save. Prefer the native
@@ -28,14 +31,23 @@ echo "launcher base: $seed"
 python3 "$here/artemis-save.py" asb "$stub" ns2jb_boot "$out/ns2jb.asb"
 cp "$body" "$out/ns2jb.lua"
 cp "$body" "$out/sscode004.lua"
+if [ -n "$extra" ]; then
+  cp "$extra" "$out/$(basename "$extra")"
+fi
 python3 "$here/artemis-save.py" launch "$seed" ns2jb.asb "$out/save9999.dat"
 python3 - "$out" "$base" <<'PY'
 import json, os, sys
 out, base = sys.argv[1], sys.argv[2]
 present = set(os.listdir(base)) if os.path.isdir(base) else set()
 files = []
-for name in ('ns2jb.asb', 'save9999.dat', 'ns2jb.lua', 'sscode004.lua'):
+names = ['ns2jb.asb', 'save9999.dat', 'ns2jb.lua', 'sscode004.lua']
+names += sorted(n for n in os.listdir(out)
+                if n not in names and n.endswith('.lua'))
+for name in names:
     entry = {'path': '/' + name, 'local': os.path.join(out, name)}
+    entry['sha256'] = __import__('hashlib').sha256(
+        open(os.path.join(out, name), 'rb').read()).hexdigest()
+    entry['size'] = os.path.getsize(os.path.join(out, name))
     if name in present:
         entry['replace'] = True
     files.append(entry)
