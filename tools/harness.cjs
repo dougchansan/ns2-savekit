@@ -316,14 +316,35 @@ function runAfter(run) {
   return result.status === null ? 7 : result.status;
 }
 
+// Is BASIC actually listening? Screen text is unreliable on dense screens (the hex
+// dump defeats the OCR), so ask the interpreter instead: PRINT 7, then look for the
+// result. Typing into a wedged application changes nothing and costs two seconds,
+// which is far cheaper than booting a host against a dead prompt.
+async function promptAlive() {
+  const marker = String(1000 + Math.floor(Math.random() * 9000));
+  await typeText(PAD, 'PRINT ' + marker + '\n');
+  for (let i = 0; i < 4; i++) {
+    await sleep(1500);
+    const shot = screen('prompt-alive');
+    // The command echoes, so one occurrence proves nothing: a dead prompt would show
+    // the echo and no result. Require the marker twice (echo + result) or once on a
+    // line that is not the echo.
+    const occurrences = (shot.text.match(new RegExp('\\b' + marker + '\\b', 'g')) || []).length;
+    const resultLine = shot.rows.some(row => row.text.trim() === marker);
+    if (occurrences >= 2 || resultLine) return {alive: true, frame: shot.image, occurrences};
+  }
+  return {alive: false, frame: capture('prompt-dead')};
+}
+
 async function startSession() {
   await ota(KEY_BIN, 'hid-kb-1');
-  const s = screen('before-session');
-  if (!/bytes free/i.test(s.text)) {
-    log('not in direct mode; frame ' + s.image);
-    return {code: 5, run: null, frame: s.image};
+  const probe = await promptAlive();
+  if (!probe.alive) {
+    log('the console is not at a BASIC prompt (PRINT produced no result); frame ' + probe.frame);
+    log('a wedged application needs a power cycle - do not start a host against it');
+    return {code: 5, run: null, frame: probe.frame};
   }
-  log('direct mode confirmed');
+  log('direct mode confirmed (PRINT answered)');
   const logFile = '/tmp/harness-host.log';
   const handle = fs.openSync(logFile, 'w');
   const host = spawn('node', ['run.cjs', '--rpc', MAC_IP], {cwd: RPC_DIR, stdio: ['ignore', handle, handle]});

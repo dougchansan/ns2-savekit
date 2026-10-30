@@ -1678,3 +1678,26 @@ This is also where `tools/console-state.cjs` shows its limit in the record: that
 screen's OCR is dominated by the hex dump, so the classifier calls it `unknown` even
 though a human reads `RPC STOP` and the prompt. The classifier guards the clean
 screens; it does not replace looking.
+
+## 2026-10-29 17:07: the fingerbot cannot reach the button at any depth
+
+`/travel?pct=N` sets the down position (`dp102`) directly, so the "arm drifted" theory
+was testable rather than assumed. Measured:
+
+| down depth | 16 s hold | result |
+| --- | --- | --- |
+| 95 (as found) | yes | capture unchanged, `255345` bytes, console pings |
+| **100** (max) | yes | capture unchanged, `255345` bytes, console pings |
+
+A deeper press at the servo's maximum does not reach the button either, so the arm is
+displaced rather than under-travelled - it needs reseating by hand. The device was put
+back to 95 so the next operator finds it as it was.
+
+### The harness now asks the interpreter instead of reading the screen
+
+The recovered-prompt screen defeats the OCR (hex noise), so "is the console listening?"
+cannot be answered by text. `startSession` now types `PRINT <random 4-digit>` and
+requires the marker **twice** - once as the echoed command and once as its result -
+before starting a host. A wedged application shows only the echo (or nothing), and the
+harness reports that instead of booting against a dead prompt. Typing into a dead app
+is harmless, so the probe costs about two seconds.
