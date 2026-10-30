@@ -1242,3 +1242,45 @@ launches" step, which runs **once per boot, not between attempts**. So each in-r
 retry starts with less space and fails earlier (the `free-space tmp` stalls). The
 operating rule that follows is stronger than "one attempt per boot": the pool's
 `MAX_ATTEMPTS = 3` should be 1, and a canary miss should cost a power cycle.
+
+## 2026-10-29 15:20-15:43: the tmp mount, and why stage 2 stalls now
+
+After the two 4/4 boots at 14:38 and 14:52, stage 2 stopped passing. The stall is
+always the same shape: the last line is `STEP free-space tmp`, and it sits there for
+7-10 minutes per attempt before the pipeline gives up.
+
+Measured state of the mounts (from the run's own `scratch-cleanup.json`, which now
+records them before deleting anything):
+
+```
+save: ["NS2_GAP_1793322731612", "f", "tag.dat", "config.dat"]
+tmp : ["tmp.dat"]
+```
+
+`tmp` is a small file-backed mount with one `tmp.dat` in it. Its free space was
+491,520 bytes on a healthy boot, **131,072** after a failed attempt, and stayed at
+131,072 across a power cycle. The acquisition's extent tree (~290 nested 32-character
+directories) is built on that mount, so at 131 KB it cannot fit.
+
+Two things were tried:
+
+1. **Cleanup can now see the mounts and walk nested paths.** It found and removed one
+   `NS2_GAP_...` directory on `save` and nothing on `tmp`, so the leftover is not a
+   root-level `NS2_GAP` entry in `tmp`. It is inside the `tmp.dat` image, where a
+   directory listing of the mount cannot reach it.
+2. **The save stands in for tmp when tmp is tight** (below 393,216 bytes). The
+   fallback fired on every attempt (`tmpFallback: {free: 131072}`) and `tmp` then
+   reported the save's 66,945,024 bytes, so from that point the extent tree is built
+   on the save.
+
+**And the stall did not move.** Three attempts with the fallback active each stalled
+with `STEP free-space tmp` as the last line, which means the blocking call is after
+the space checks - the 16 MiB commit file, the ~45-level canary path, the canary
+file, or the extent tree. So tmp space is *a* difference from the healthy boots but
+not the cause of this stall.
+
+Because that is three identical failures, the next step is instrumentation rather
+than another boot: `probe-reserved-gap.cjs` now logs `STEP commit-data`,
+`STEP canary-parents`, `STEP canary-file`, `STEP canary-type`,
+`STEP selected-directory`, `STEP extent-directories` and `STEP extent-marker`. The
+next stall will name the call that blocks instead of costing a boot to guess.
