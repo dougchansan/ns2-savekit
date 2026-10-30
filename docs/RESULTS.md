@@ -1457,3 +1457,39 @@ Two readings:
 So the next boot is a fair test of the fixed sweep rather than another identical
 retry. If it still fails, the comparison to make is against a successful run's
 *qualified* row (`selectedMarker: true`), not its first window.
+
+## 2026-10-29 16:41: correction - the sweep was right the first time
+
+The three sweep changes from the previous hour were reverted after reading the
+stored successful reports properly. The evidence, from `uy0bDz` and `i1FuBB` (both
+4/4) versus the recent failures:
+
+| report | positive rows | each row looks like | markerSelected |
+| --- | --- | --- | --- |
+| success `uy0bDz` | **2** | margin 1428/1880, selected false, **type 0**, result 0, changed `["canary"]` | true |
+| success `i1FuBB` | **2** | margin 2345/1750, selected false, **type 0**, result 0, changed `["canary"]` | true |
+| failure `yCKell` | **25** | same first row, then 24 more | *never reached* |
+
+`type 1` never appears in the **positive** profile of a successful run - it appears
+in `abort-control` and in the `extent-present` qualification, which is a different
+profile. So "prefer a typed window" was reading the wrong rows: the successful runs
+committed to the **first** window, which is `type 0` with the canary changed, exactly
+what the original code does and exactly what I made it skip.
+
+The cost of being wrong was visible: the widened sweep turned a 2-wave positive phase
+into 25 waves, and the runs then ended with `socket hang up` instead of a canary
+verdict. (Some of those transport losses were self-inflicted - hosts were killed
+while restarting loops - but the 25-wave phase was not.) The sweep is back to
+`markerOffset + attempt * 0x30`, breaking at the first window.
+
+### What the failures actually are
+
+With the sweep reverted, the comparison points at the *qualification*, not the
+sweep. In `uy0bDz` and `i1FuBB` the `extent-present` row has
+`selectedMarker: true`, `canaryType 1`, `canaryResult 0`, `changed []` - and one
+failing run (`P9kh82`) reached **exactly that state** (`markerSelected: true`,
+`storageSize` recorded) and then lost the connection (`socket hang up`).
+
+So the canary qualification does still happen; what fails now is either the canary
+miss (`markerSelected false` at 16:12) or losing the RPC connection after it. Those
+are different problems, and only the first is a grooming race.
