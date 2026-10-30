@@ -1284,3 +1284,48 @@ than another boot: `probe-reserved-gap.cjs` now logs `STEP commit-data`,
 `STEP canary-parents`, `STEP canary-file`, `STEP canary-type`,
 `STEP selected-directory`, `STEP extent-directories` and `STEP extent-marker`. The
 next stall will name the call that blocks instead of costing a boot to guess.
+
+## 2026-10-29 16:02: the tmp mount is fixed; the stall is the gap-content open
+
+Two things came out of instrumenting the acquisition.
+
+### The tmp image can be reclaimed, and now is
+
+`tmp` is a file-backed mount holding one `tmp.dat`. Deleting that file and
+committing restored the mount exactly as predicted:
+
+```
+tmp before/after: 131072 -> 491520
+reset: {'file': 'tmp.dat', 'type': 1, 'command': 1, 'result': 0}
+```
+
+491,520 bytes is the free space the two 4/4 boots had, so this puts every boot back
+on the healthy configuration. The cleanup step now does it whenever tmp is below
+393,216 bytes free, and records the before/after numbers in `scratch-cleanup.json`.
+Two bugs on the way there, both recorded because they cost boots:
+
+- matching the entry by its directory-entry *type* rejected it (the type byte for
+  this file is 1, not the directory value), so the first version silently did
+  nothing (`tmpReset: null`, free space unchanged);
+- the save-stands-in-for-tmp fallback is now opt-in (`NS2_TMP_FALLBACK=1`): with it
+  on, the stall moved from `free-space tmp` to `extent-marker` - further, but still
+  a stall, and the extent tree belongs on tmp as designed.
+
+### The stall after that is in the gap-content phase
+
+With tmp healthy the acquisition walks through the new markers -
+`commit-data`, `canary-parents (45)`, `canary-file`, `canary-type`,
+`selected-directory`, `extent-directories (3)`, `extent-marker` - and then stops for
+6+ minutes with `extent-marker` as the last line. So the blocking call is one of the
+three that follow it:
+
+```
+STEP extent-marker
+  s.ipc('Open own gap content', root, 200)     <-- marked 'open-gap-content' now
+  domain.storageSize(s, storage)               <-- marked 'storage-size' now
+  check(storageSize >= probeReadSize)
+```
+
+`root` there is the promoted fsp-srv session, and cmd 200 is a non-standard id, so
+"the command never returns" is the first thing to test rather than assume. The next
+boot's log names which of the two blocks.
