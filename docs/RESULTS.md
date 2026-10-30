@@ -1546,3 +1546,69 @@ Two presses leaving the frame byte-identical is the same signature as the earlie
 "arm travel" fault (`RESULTS.md`, 2026-10-28: at `dp102` 85 every press was a silent
 no-op). Power control therefore needs the arm reseated physically; no host-side
 command can recover the console until then.
+
+## 2026-10-29 16:54: a recovered session without a power cycle, and what cannot recover one
+
+### An RPC-loop wedge can end by itself, and then a new session needs no menu work
+
+While the console was stuck in the RPC loop, a 16 s power-button hold was followed by
+a screen that had *finished*:
+
+```
+BOOT OK 3925528160
+HOST CONNECTED
+RPC RUNNING
+RPC STOP  32896
+OK
+[WORKSPACE]
+```
+
+i.e. the bootstrap's `RPC()` had returned and BASIC was back at its direct-mode
+prompt, with the keyboard firmware still attached. From there a new session needs
+only the four lines - no power cycle, no home-menu navigation:
+
+```
+LOAD "TXT:NS2"  -> confirm dialog -> RUN -> "BOOT READY 1015" -> REMOVE -> "Out of memory (REMOVE)"
+V=START(39380,192,168,50,235,0,0,0,0)          -> run switch2-kjr7s0
+```
+
+That run failed in 2 minutes with `Native batch did not terminate; resources
+retained` - a different failure from the canary, and evidence that a reused,
+long-running application is not equivalent to a fresh one.
+
+### A native-call wedge is not recoverable from here
+
+The next wedge behaved differently and pinned down the boundary:
+
+| action | result |
+| --- | --- |
+| 16 s hold | capture byte-identical to before (`239109` bytes), screen unchanged |
+| kill the host process (`run.cjs`) | capture byte-identical again |
+| `/status` on the fingerbot | `dp102: 95`, `dp105: 95`, `dp103: 0` |
+
+So the wedge broke only when the application was in the **RPC read**, not when it was
+inside a native call: the earlier `RPC STOP` came from the read returning, and neither
+killing the host nor a hold touches a native stall. That is also the second
+independent sign that the fingerbot no longer reaches the button, since a hardware
+long-press cannot be ignored by the console.
+
+## 2026-10-29 16:52: metadata can be written from either side
+
+The name and thumbnail write path exists in two forms, both tested against the real
+console sample:
+
+| piece | what it does | proof |
+| --- | --- | --- |
+| `tools/smb-meta.cjs` | dump/diff/name/icon on a pulled META | `node tests/test_smb_meta.cjs` 7/7 |
+| `payloads/ns2jb-metadata.lua` | the same surgery in Lua, for the console side | `lua tests/test_metadata_lua.lua` 15/15 |
+
+Both keep the file at 11152 bytes and, on the real sample, change **only** the 32-byte
+name block (`0x70..0x8f`) - verified byte by byte in both test suites. Two bugs found
+while writing them, both mine: the slot's capacity must be the block's 22 bytes (not
+the current string's, which shrank and then refused a name that fit), and the tag
+lives in the thumbnail's first pixels, so replacing an icon deletes the tag and it
+must be re-stamped.
+
+The measured limit stands: **11 characters** (`HOMEBREW` fits, `HOMEBREWLAUNCHER`
+does not). `--allow-overlap` writes past the block, into the thumbnail's black
+margin, and is explicitly marked unproven on a console.
