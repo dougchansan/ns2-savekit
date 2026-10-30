@@ -1639,3 +1639,42 @@ built-in samples render as expected (`docs/images/2026-10-29-artwork-sheet.png`)
 The measured name limit still applies end to end: the chooser refuses to write more
 than the 22-byte block unless `--allow-overlap` is passed, so a chosen name has to be
 11 characters or fewer.
+
+## 2026-10-29 17:02: a recovered application is not a usable session host
+
+The console freed itself once more (16 s hold -> `RPC STOP 32896` at the prompt), and
+this time the prompt was proven live before anything else was typed:
+
+```
+RPC STOP      32896
+OK
+PRINT 1
+1
+OK
+```
+
+So the application answered BASIC again. The next step killed it: `LOAD "TXT:NS2"`
+was typed and echoed - `LOAD "TXT:NS2"` appears with no dialog and no `OK` - and from
+that moment the console stopped responding to input. Three probes left the capture
+**byte-identical** (`255345` bytes):
+
+| probe | result |
+| --- | --- |
+| another Enter | no change |
+| 16 s hold | no change |
+| `PRINT 2` after the hold | no change |
+
+Two readings, both useful:
+
+- the recovery after a failed acquisition produces an application whose file layer is
+  already broken - the first `LOAD` froze it - so "recovered prompt" is not the same
+  as "usable session host", and spending a rare recovered window on a full exploit
+  run is a poor bet;
+- the hold that broke the earlier wedge did nothing here, which is consistent with
+  the wedge being inside a native call this time: only the *RPC read* wedge is
+  reachable from outside.
+
+This is also where `tools/console-state.cjs` shows its limit in the record: that
+screen's OCR is dominated by the hex dump, so the classifier calls it `unknown` even
+though a human reads `RPC STOP` and the prompt. The classifier guards the clean
+screens; it does not replace looking.
