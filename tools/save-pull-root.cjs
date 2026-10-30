@@ -20,6 +20,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
+const crypto = require('node:crypto');
 const {build, openCommand, plan} = require('./lib/save-attr.cjs');
 
 function request(socketPath, command) {
@@ -56,7 +57,11 @@ const archiveDir = archive => `archive-space${archive.space}-type${archive.type}
 
 async function main() {
   const argv = process.argv.slice(2);
-  const flags = new Set(['--list-only', '--list-uids', '--keep-open', '--filetime', '--all']);
+  // `known` is what exists; `given` is what was passed. Testing membership of the
+  // known set made every boolean flag true on every run (a pull that only listed uids
+  // and exited 0), which is what made pull-all report six archives with no files.
+  const known = new Set(['--list-only', '--list-uids', '--keep-open', '--filetime', '--all']);
+  const given = new Set(argv.filter(a => known.has(a)));
   const valued = ['--space', '--type', '--rank', '--index', '--static-id'];
   const value = {};
   const optionValue = name => {
@@ -68,11 +73,11 @@ async function main() {
   };
   for (const name of valued) value[name] = optionValue(name);
   for (const arg of argv) {
-    if (arg.startsWith('--') && !flags.has(arg) && !valued.includes(arg))
+    if (arg.startsWith('--') && !known.has(arg) && !valued.includes(arg))
       throw Error('unknown option ' + arg);
   }
   const positional = argv.filter((arg, i) =>
-    !flags.has(arg) && !valued.includes(arg) && !(i > 0 && valued.includes(argv[i - 1])));
+    !known.has(arg) && !valued.includes(arg) && !(i > 0 && valued.includes(argv[i - 1])));
   const [runDirectory, programText, outputDirectory, forcedUid] = positional;
   if (!runDirectory || !programText || !outputDirectory) {
     console.error('usage: node save-pull-root.cjs <run-directory> <program-id> <output-directory> ' +
@@ -80,10 +85,10 @@ async function main() {
       '[--all] [--list-only]');
     process.exit(2);
   }
-  const listOnly = flags.has('--list-only');
-  const listUids = flags.has('--list-uids');
-  const keepOpen = flags.has('--keep-open');
-  const all = flags.has('--all');
+  const listOnly = given.has('--list-only');
+  const listUids = given.has('--list-uids');
+  const keepOpen = given.has('--keep-open');
+  const all = given.has('--all');
   if (value['--space'] !== undefined && value['--space'] > 255) throw Error('--space is a u8');
   if (value['--type'] !== undefined && value['--type'] > 255) throw Error('--type is a u8');
   if (value['--rank'] !== undefined && value['--rank'] > 1) throw Error('--rank is 0 (Primary) or 1 (Secondary)');
@@ -162,7 +167,7 @@ async function main() {
         ' (tried ' + candidates.length + ' attribute combinations)');
     }
 
-    if (flags.has('--filetime')) {
+    if (given.has('--filetime')) {
       if (archives.length !== 1)
         throw Error('--filetime needs exactly one archive; add --space/--type/--rank');
       openHandle = archives[0].handle;
@@ -254,17 +259,23 @@ async function main() {
         if (!opened.result) {
           const size = Number(await filesystem.fileSize(s, opened.handle));
           const file = await fs.open(target, 'w');
+          // Hash while copying: the console already proves each chunk against a hash it
+          // computed, and this local digest makes the pulled archive verifiable later
+          // (tools/verify-save-manifest.cjs) without trusting the transfer.
+          const hash = crypto.createHash('sha256');
           let offset = 0;
           while (offset < size) {
             const chunk = Math.min(0x40000, size - offset);
             const data = await filesystem.readFile(s, opened.handle, offset, chunk);
             if (!data.length) throw Error('Short read at ' + full + ' +' + offset);
             await file.write(data);
+            hash.update(data);
             offset += data.length;
           }
           await file.close();
           await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
           state.files += 1; state.bytes += size;
+          (state.entries ||= []).push({path: full, size, sha256: hash.digest('hex')});
           console.error(`  ${full} (${size} bytes)`);
         } else {
           await walk(save, full, target, state);
@@ -285,8 +296,11 @@ async function main() {
           ' (read-only, nothing written)');
       } else {
         const target = all ? path.join(outputDirectory, archiveDir(archive)) : outputDirectory;
-        const state = {files: 0, bytes: 0};
+        const state = {files: 0, bytes: 0, entries: []};
         await walk(openHandle, '/', target, state);
+        await fs.writeFile(path.join(target, 'manifest.json'),
+          JSON.stringify({archive: archiveText(archive), files: state.files,
+            bytes: state.bytes, entries: state.entries}, null, 2) + '\n');
         console.error(`done: ${state.files} files, ${state.bytes} bytes -> ${target}`);
       }
       if (!keepOpen) {

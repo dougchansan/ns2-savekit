@@ -466,6 +466,7 @@ title and choose `7`. The order is always **back up → write → restart → ve
 | what you see | what it means | what to do |
 | --- | --- | --- |
 | `0x7d402` for every account | the game has not made a save yet | launch the demo and close it fully, then retry |
+| `could not tell whether … has save data` / `exited without listing anything` | the read-only probe never listed an archive. An older `save-pull-root.cjs` treated every flag as set, so `--list-only` printed the account uids, exited 0 and stopped; the kit used to report that as `0x7d402` for every title (issue #2) | update the tools; the kit now names this instead of calling the save absent |
 | `Directory exceeds the N-entry probe limit` | your copy predates the 2048-entry limit | raise it in `tools/save-pull-root.cjs` and `tools/save-write-stage.cjs` |
 | `could not list installed applications` / `could not list accounts` | one of `inventory.cjs`'s two enumerations failed; the lines under it are the child's own error and a hint (older copies printed the catch-all `could not list applications or accounts`) | follow the hint; an account failure can be worked around with `node tools/inventory.cjs <run> <uid>` |
 | `EEXIST …-ncm-system-programs.bin` | the engine checkout is unpatched | `sh patches/apply.sh /path/to/ns2jb`, then start a new run - an existing run folder keeps the old engine copy |

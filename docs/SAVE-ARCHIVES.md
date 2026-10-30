@@ -78,6 +78,13 @@ Targeted knobs: `--space N`, `--type N`, `--rank N`, `--index N`,
 `--static-id N`, plus the positional uid. `--list-only` reports what would be
 pulled; `--list-uids` prints the console's accounts.
 
+The kit does not use that sweep to decide which account has a save. It probes
+`space=1 type=Account` (then `space=4`) for one account at a time, so an empty
+account costs two targeted probes (up to four opens) rather than a twenty-open
+sweep. Only when no account has its own archive does it scan the shared
+Device/Bcat/Cache/Temporary shapes once, with uid 0. A probe that exits 0
+without a listing is reported as a tool problem, never as "no save data".
+
 ## The tree inside a save is a different problem
 
 Games lay out their archive however they like, and that needs no per-game code:
