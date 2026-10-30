@@ -1226,3 +1226,19 @@ The fix applied to the tool: `--space N --type N` restricts the open to one
 combination (the write tool already opens exactly one, User/Account, and has never
 needed a sweep). The next session should pull with
 `--space 1 --type 1`, which is also what `save-write-stage.cjs` assumes.
+
+### The in-run retry is what fills `tmp`, so the first attempt is the only one
+
+The failed boot `switch2-eZQxjq` shows why attempt 2 is worse than attempt 1:
+
+| attempt | error | free in `tmp` |
+| --- | --- | --- |
+| 1 | `Overwrite missed the qualified canary` (`canaryChanged:true`, `markerSelected:false`) | 491,520 bytes reported, required 65,536 |
+| 2 | `Console response timed out` | **131,072 bytes** |
+
+The acquisition's scratch lives on the tiny `tmp` mount (~512 KiB). Its extent
+directories are only reclaimed by the pipeline's "Remove exploit scratch from prior
+launches" step, which runs **once per boot, not between attempts**. So each in-run
+retry starts with less space and fails earlier (the `free-space tmp` stalls). The
+operating rule that follows is stronger than "one attempt per boot": the pool's
+`MAX_ATTEMPTS = 3` should be 1, and a canary miss should cost a power cycle.

@@ -23,7 +23,7 @@
 // reversible (docs/RESULTS.md), which is what makes the cycle unattended.
 const fs = require('node:fs');
 const path = require('node:path');
-const {execFileSync, spawn} = require('node:child_process');
+const {execFileSync, spawn, spawnSync} = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const PAD = process.env.PAD || 'http://192.168.50.215';
@@ -47,6 +47,7 @@ const MODE = VERBS.includes(argv[0]) ? argv[0] : 'full';
 const CAPS = arg('caps', '/tmp/ns2caps');
 const RETRIES = Number(arg('retries', '2'));
 const STAGE2_WAIT = Number(arg('wait', '600')) * 1000;
+const AFTER = arg('after', process.env.HARNESS_AFTER || null);
 fs.mkdirSync(CAPS, {recursive: true});
 
 // A closed stdout must not kill a cycle: the work matters, the log is a convenience.
@@ -273,6 +274,31 @@ function readRun(run) {
   return out;
 }
 
+// Wait for the pipeline's held state, which is when savekit tools can use the run.
+async function waitHeld(run, seconds = 300) {
+  const deadline = Date.now() + seconds * 1000;
+  while (Date.now() < deadline) {
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(run, 'switch2', 'pipeline.json'), 'utf8'));
+      if (record.hold && record.hold.state === 'ready') return true;
+    } catch { /* the file appears once the pipeline starts */ }
+    await sleep(3000);
+  }
+  return false;
+}
+
+// --after runs one shell command with RUN pointing at the session, which is the
+// point of the whole cycle: a 4/4 that nobody uses costs another boot.
+function runAfter(run) {
+  if (!AFTER) return null;
+  log('after: ' + AFTER);
+  const result = spawnSync('sh', ['-c', AFTER], {
+    stdio: 'inherit', env: {...process.env, RUN: run}, timeout: 30 * 60 * 1000
+  });
+  log('after exit ' + (result.status === null ? '(killed)' : result.status));
+  return result.status === null ? 7 : result.status;
+}
+
 async function startSession() {
   await ota(KEY_BIN, 'hid-kb-1');
   const s = screen('before-session');
@@ -306,7 +332,13 @@ async function startSession() {
     const state = readRun(run);
     if (state.root || /4\/4/.test(state.log)) {
       log(`4/4 REACHED (${state.stages.at(-1) || 'stage 4'})`);
-      return {code: 0, run, frame: capture('4of4')};
+      const frame = capture('4of4');
+      // The pipeline holds the FS root only after its RO stages finish; tools
+      // answer "Another memory request is active" until then.
+      const held = await waitHeld(run);
+      log(held ? 'held endpoint ready' : 'WARNING: hold never reported ready');
+      const after = runAfter(run);
+      return {code: after === null ? 0 : after, run, frame};
     }
     if (state.error) {
       const frame = capture('acquire-failed');
