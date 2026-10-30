@@ -115,7 +115,14 @@ async function ota(bin, expectFw) {
   for (let i = 0; i < 40; i++) {
     await sleep(2500);
     const now = await padStatus();
-    if (now.fw === expectFw) { log(`board reports ${now.fw}`); return; }
+    if (now.fw === expectFw) {
+      log(`board reports ${now.fw}`);
+      // The console drops the first HID report after a re-enumeration, so prime it
+      // with an unmodified modifier (no text, no side effects) before typing.
+      await http(`${PAD}/key?code=225`, 8000);
+      await sleep(900);
+      return;
+    }
   }
   throw Error(`board never reported ${expectFw} after OTA (still ${(await padStatus()).fw})`);
 }
@@ -210,8 +217,24 @@ async function launchSmileBASIC() {
 
 function typeText(base, text) { return http(`${base}/type?text=${encodeURIComponent(text)}`, 30000); }
 
+// The confirm dialog's default button is Yes, so Enter accepts it. A single Enter
+// is not reliable right after a flash (the first report is dropped), so retry and
+// stop as soon as the dialog is gone - an extra Enter on the prompt is harmless.
+async function confirmDialog() {
+  for (let i = 0; i < 4; i++) {
+    await typeText(PAD, '\n');
+    await sleep(2000);
+    const s = screen('confirm');
+    if (!/are you sure/i.test(s.text)) return s;
+    log(`  confirm dialog still up after Enter ${i + 1}; retrying`);
+  }
+  throw Error('confirm dialog would not dismiss');
+}
+
 // Poll the screen until the text matches, so a wait is tied to what was actually
-// drawn rather than to a guessed sleep.
+// drawn rather than to a guessed sleep. Patterns must survive OCR: the console
+// draws "Out of memory (REMOVE)" and Vision returns it split across lines, so the
+// marker tests look for the distinctive word, not the sentence.
 async function waitFor(pattern, tag, seconds = 30) {
   const deadline = Date.now() + seconds * 1000;
   let last;
@@ -272,9 +295,9 @@ async function startSession() {
   log('host run ' + run);
   await typeLine('LOAD "TXT:NS2"');
   await waitFor('are you sure', 'confirm');                  // Yes is preselected
-  await typeLine('', 'ok');                                  // Enter accepts
-  await typeLine('RUN', 'dist boot ready');
-  await typeLine('REMOVE NSR,&H60000000,&H3FFFFFFF', 'out of memory');
+  await confirmDialog();
+  await typeLine('RUN', 'boot\\s*ready');
+  await typeLine('REMOVE NSR,&H60000000,&H3FFFFFFF', 'memory');
   await typeLine(COMMAND);
   const deadline = Date.now() + STAGE2_WAIT;
   let last = '';
