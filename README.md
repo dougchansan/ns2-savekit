@@ -543,6 +543,7 @@ tests/     offline suites; none of them prove console behaviour:
              lua  tests/test_metadata_lua.lua     name/thumbnail writer (15)
              lua  tests/test_artwork_lua.lua      chooser selection (8)
              node tests/test_console_state.cjs    screen classification (9)
+             sh   tests/test_inject_dryrun.sh     injection builder/manifest (3)
              python3 tests/test_offline.py        save/ASB encoders (8)
 ```
 
