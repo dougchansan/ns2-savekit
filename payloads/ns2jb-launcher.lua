@@ -42,6 +42,25 @@ add('lua ' .. _VERSION)
 add('save ' .. base)
 add('game ' .. game)
 
+-- Provenance, before anything that can fail: append to a file that an
+-- earlier payload already created. A pull can then tell "never ran" from
+-- "ran but could not create its own report", which the 21:37 boot could not.
+do
+  local ok, file = pcall(io.open, base .. '/ns2jb-report.txt', 'ab')
+  if ok and file then
+    local stamp = 0
+    pcall(function() stamp = os.time() end)
+    pcall(function()
+      file:write('ns2jb launcher ran ' .. tostring(stamp) .. '\n')
+      file:flush()
+      file:close()
+    end)
+    add('provenance appended to ' .. base .. '/ns2jb-report.txt')
+  else
+    add('provenance write failed for ' .. base .. '/ns2jb-report.txt')
+  end
+end
+
 local function readFile(path)
   local file = io.open(path, 'rb')
   if not file then return nil end

@@ -1972,3 +1972,19 @@ fail in four different later places:
 
 One boot in six passed all of it (21:23, which performed the injection). That yield,
 not the canary, is now the limiting factor.
+
+## 2026-10-30 23:59: provenance instrumentation, and a body-selection footgun
+
+The launcher now appends one line to `save:/ns2jb-report.txt` **before** any check that
+can fail, so a pull can distinguish "the script never ran" from "it ran and could not
+create its own report" - the question the 21:37 boot could not answer.
+
+Doing that exposed a footgun in the builder. `build-untethered.sh` defaults the body to
+`payloads/ns2jb.lua`, which is a **2045-byte probe** (it is what wrote the stale
+`ns2jb-report.txt` reading "ns2jb body"), while the injector passes
+`BODY=payloads/ns2jb-launcher.lua` explicitly. Rebuilding by hand without `BODY`
+therefore rebuilt staging with the wrong program - a 2045-byte probe instead of the
+4463-byte launcher - and the only visible sign was a sha256 that had not changed. The
+staging set is rebuilt with the injector's own body plus the instrumentation:
+ns2jb.lua/sscode004.lua 5134 bytes, sha256 9b4859e0..., and `tests/test_payload_lua.lua`
+13/13 (the line-width check caught my first, over-long comment).

@@ -57,6 +57,10 @@ const AFTER = arg('after', process.env.HARNESS_AFTER || null);
 // 4 s all failed), while 3 s did. HDMI also appears only around t+40 s, so the wait
 // for a picture is longer than it used to be.
 const BOOT_PRESS_MS = Number(arg('boot-press', process.env.HARNESS_BOOT_PRESS || '3000'));
+// Measured 18:13: after reseating the arm, travel 95 no longer reaches the power
+// button at all (two 16 s holds left the console untouched) while 100 does. Set it
+// before every cycle when asked, so the depth is a property of the rig, not a guess.
+const TRAVEL = arg('travel', process.env.HARNESS_TRAVEL || null);
 // Operator rule, from the console side: ONE RPC session per boot. If a session dies,
 // the console is restarted with a hard power cycle - a wedged application never
 // accepts a second host, and trying costs a boot. The timestamps live outside the
@@ -198,6 +202,10 @@ async function consoleWentOff(seconds = 26) {
 }
 
 async function powerCycle() {
+  if (TRAVEL) {
+    const reply = await http(`${FINGERBOT}/travel?pct=${TRAVEL}`, 15000);
+    log('fingerbot: travel ' + TRAVEL + ' (' + reply.body.slice(0, 40) + ')');
+  }
   log('fingerbot: arm up + 16 s hold (force off)');
   const before = readState();
   await http(`${FINGERBOT}/up`, 30000);
@@ -321,12 +329,17 @@ function typeText(base, text) { return http(`${base}/type?text=${encodeURICompon
 // is not reliable right after a flash (the first report is dropped), so retry and
 // stop as soon as the dialog is gone - an extra Enter on the prompt is harmless.
 async function confirmDialog() {
-  for (let i = 0; i < 4; i++) {
-    await typeText(PAD, '\n');
+  // The console drops reports right after a flash, and a short Enter is the one that
+  // gets lost: retry with a longer key hold, then with the pad's A (the dialog accepts
+  // it), before declaring the dialog stuck.
+  for (let i = 0; i < 6; i++) {
+    if (i < 2) await typeText(PAD, '\n');
+    else if (i < 4) await http(`${PAD}/key?code=40&ms=250`, 8000);
+    else await press('a=1', 120, 400);
     await sleep(2000);
     const s = screen('confirm');
     if (!/are you sure/i.test(s.text)) return s;
-    log(`  confirm dialog still up after Enter ${i + 1}; retrying`);
+    log(`  confirm dialog still up after attempt ${i + 1}; retrying`);
   }
   throw Error('confirm dialog would not dismiss');
 }
@@ -437,6 +450,11 @@ async function startSession() {
   log('direct mode confirmed (PRINT answered)');
   const logFile = '/tmp/harness-host.log';
   const handle = fs.openSync(logFile, 'w');
+  // A host left over from an earlier attempt still holds 39380 and the next run dies
+  // with EADDRINUSE before it can print a run folder - which cost three boots on
+  // 2026-10-30 00:17 before the log was read.
+  try { execFileSync('pkill', ['-f', 'run.cjs --rpc'], {timeout: 5000}); } catch { /* none running */ }
+  await sleep(500);
   const host = spawn('node', ['run.cjs', '--rpc', MAC_IP], {cwd: RPC_DIR, stdio: ['ignore', handle, handle]});
   let run = null;
   for (let i = 0; i < 60; i++) {
