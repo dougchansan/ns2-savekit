@@ -1780,3 +1780,28 @@ It asserts the things that cost boots when they break:
 hand: the dropped first keystroke after a flash, the OCR marker that split "Out of
 memory (REMOVE)" across lines, the unguarded `require` that started a real cycle, and
 the `powerCycle` tail that never recorded a boot.
+
+## 2026-10-29 17:23-17:30: every fingerbot lever tried, none reaches the button
+
+The console has been frozen in a native call since 17:03 (capture 160792 bytes, HDMI
+up, pingable). Power control is the only way out and it does not work. What was tried,
+so this is not re-litigated:
+
+| lever | value tried | result |
+| --- | --- | --- |
+| down depth `dp102` (`/travel`) | 95 (as found) | 16 s hold, capture unchanged |
+| | **100** (servo maximum) | 16 s hold, capture unchanged |
+| rest position `dp105` (`/uppos`) | **88** | 16 s hold, capture unchanged |
+| | **100** | 16 s hold, capture unchanged |
+| arm release before pressing | `/up` (answers `dp1:false`) | next `/status` reports `dp1:true` again |
+| press then verify | 1 s and 16 s presses | capture byte-identical |
+
+The fingerbot answers every command and reports `dp1:true` while claiming to release,
+which is what a displaced or stuck arm looks like from here. Both settings were
+restored to 95.
+
+Consequence, stated plainly: **the console cannot be power-cycled by anything this
+session can reach**, and per the one-RPC-per-boot rule no further session is possible
+until it is. The remaining milestones - pinned-repeat boot, backup pull, META/PLAYMENU
+rename, injection, payload-v1 message capture - are all built, tested offline, and
+waiting on that one physical action.
