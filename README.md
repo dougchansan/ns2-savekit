@@ -46,6 +46,14 @@ Artemis is where we prove the harder half — running code from a save — but a
 save backup/restore/mod workflow needs nothing Artemis-specific, and the same
 code installed the 275-file Seedsow Lua Editor save byte-for-byte.
 
+A title can own more than one archive: an Account save per user, a common
+Account save (`uid 0`), and Device/Bcat/Cache archives. The pull opens the first
+that exists by default; `--all` pulls every one into its own subdirectory, and
+`--space/--type/--rank/--index/--static-id` target a specific attribute. See
+[docs/SAVE-ARCHIVES.md](docs/SAVE-ARCHIVES.md) for the attribute matrix and why
+the save's own directory layout (BOTW's slot folders, album, compendium) needs no
+per-game handling.
+
 ## The two mechanisms
 
 **1. Save access (`tools/`).** The exploit hands us a session whose fsp-srv root
@@ -526,9 +534,10 @@ tools/     save pull/write/list/enumerate, ASB encoder, caret patcher, FTP mirro
 payloads/  Lua that runs inside the game: bootstrap probe, capability probe, env map + pluto fuzz
 config/    write allowlist template (local config files are gitignored)
 docs/      TECHNICAL.md (mechanism + IPC layout), RESULTS.md (hardware evidence
-           and the untethered roadmap), PATCHED-ENGINE.md (the required engine patches)
-tests/     offline round-trip, manifest, title-name and inventory-reporting tests
-           (do not prove console behaviour)
+           and the untethered roadmap), SAVE-ARCHIVES.md (which archive the open
+           call selects), PATCHED-ENGINE.md (the required engine patches)
+tests/     offline round-trip, manifest, title-name, save-attribute and
+           inventory-reporting tests (do not prove console behaviour)
 ```
 
 ## Licence and third parties

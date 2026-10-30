@@ -3,15 +3,24 @@
 // root, enumerating account uids with the CMIF pointer-buffer ListAllUsers call.
 //
 //   node save-pull-root.cjs <run-directory> <program-id> <output-directory> [uid-hex]
+//        [--space N] [--type N] [--rank N] [--index N] [--static-id N]
+//        [--all] [--list-only] [--list-uids] [--keep-open]
 //
 // Why the promoted root: a normal application session gets FS 6400
 // (PermissionDenied) for another title's save. The exploit already promotes the
 // cached PID of its dedicated fsp-srv root (ro/root/current-root.json, pid 1),
 // which passes fsp-srv's save-data access check. Read-only command 53 is used
 // so the save is never modified; it is closed before the process exits.
+//
+// A title can own more than one archive. The default sweep stops at the first
+// that opens: Account saves per user, then the common uid 0, then Device/Bcat/
+// Cache/Temporary (attribute all-zero except Type). --all keeps going and pulls
+// every archive into its own subdirectory. It is opt-in because a long sweep is
+// what wedges a session (docs/RESULTS.md).
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
+const {build, openCommand, plan} = require('./lib/save-attr.cjs');
 
 function request(socketPath, command) {
   return new Promise((resolve, reject) => {
@@ -33,36 +42,52 @@ function request(socketPath, command) {
 }
 
 const code = value => '0x' + (Number(value) & 0x3fffff).toString(16);
-const SPACES = {0: 'System', 1: 'User', 2: 'SdSystem', 3: 'Temporary', 4: 'SdUser'};
-const TYPES = {0: 'System', 1: 'Account', 2: 'Bcat', 3: 'Device', 4: 'Temporary', 5: 'Cache'};
+const SPACES = {0: 'System', 1: 'User', 2: 'SdSystem', 3: 'Temporary', 4: 'SdUser',
+  100: 'ProperSystem', 101: 'SafeMode', 102: 'ProperUser'};
+const TYPES = {0: 'System', 1: 'Account', 2: 'Bcat', 3: 'Device', 4: 'Temporary',
+  5: 'Cache', 6: 'SystemBcat', 7: 'StreamPlay'};
+
+const uidLabel = uid => uid.toString('hex').slice(0, 16);
+const archiveText = archive => `space=${SPACES[archive.space] ?? archive.space} ` +
+  `type=${TYPES[archive.type] ?? archive.type} rank=${archive.rank} index=${archive.index} ` +
+  `uid=${uidLabel(archive.uid)}`;
+const archiveDir = archive => `archive-space${archive.space}-type${archive.type}` +
+  `-rank${archive.rank}-index${archive.index}-${uidLabel(archive.uid).slice(0, 8)}`;
 
 async function main() {
-  let argv = process.argv.slice(2);
-  const listOnly = argv.includes('--list-only');
-  const listUids = argv.includes('--list-uids');
-  // Crash investigation knobs: keep the save mounted, keep the session alive.
-  const keepOpen = argv.includes('--keep-open');
-  // Targeted open: the space/type sweep below can be up to 60 opens of other
-  // titles' saves, and on this console a sweep is what wedges the session inside
-  // an unresolved IPC call (2026-10-29: two sessions lost that way, console alive
-  // in RPC RUNNING). When the combination is known, open exactly one.
+  const argv = process.argv.slice(2);
+  const flags = new Set(['--list-only', '--list-uids', '--keep-open', '--filetime', '--all']);
+  const valued = ['--space', '--type', '--rank', '--index', '--static-id'];
+  const value = {};
   const optionValue = name => {
     const at = argv.indexOf(name);
-    if (at < 0) return null;
-    const value = argv[at + 1];
-    if (!/^[0-9]+$/.test(value)) throw Error(name + ' needs a number');
-    return Number(value);
+    if (at < 0) return undefined;
+    const text = argv[at + 1];
+    if (!/^[0-9]+$/.test(text)) throw Error(name + ' needs a number');
+    return Number(text);
   };
-  const onlySpace = optionValue('--space');
-  const onlyType = optionValue('--type');
-  argv = argv.filter((a, i) => a !== '--list-only' && a !== '--list-uids' && a !== '--keep-open' &&
-    a !== '--space' && a !== '--type' && !(i > 0 && ['--space', '--type'].includes(argv[i - 1])));
-  const [runDirectory, programText, outputDirectory, forcedUid] = argv;
+  for (const name of valued) value[name] = optionValue(name);
+  for (const arg of argv) {
+    if (arg.startsWith('--') && !flags.has(arg) && !valued.includes(arg))
+      throw Error('unknown option ' + arg);
+  }
+  const positional = argv.filter((arg, i) =>
+    !flags.has(arg) && !valued.includes(arg) && !(i > 0 && valued.includes(argv[i - 1])));
+  const [runDirectory, programText, outputDirectory, forcedUid] = positional;
   if (!runDirectory || !programText || !outputDirectory) {
     console.error('usage: node save-pull-root.cjs <run-directory> <program-id> <output-directory> ' +
-      '[uid-hex] [--space N] [--type N] [--list-only]');
+      '[uid-hex] [--space N] [--type N] [--rank N] [--index N] [--static-id N] ' +
+      '[--all] [--list-only]');
     process.exit(2);
   }
+  const listOnly = flags.has('--list-only');
+  const listUids = flags.has('--list-uids');
+  const keepOpen = flags.has('--keep-open');
+  const all = flags.has('--all');
+  if (value['--space'] !== undefined && value['--space'] > 255) throw Error('--space is a u8');
+  if (value['--type'] !== undefined && value['--type'] > 255) throw Error('--type is a u8');
+  if (value['--rank'] !== undefined && value['--rank'] > 1) throw Error('--rank is 0 (Primary) or 1 (Secondary)');
+  if (value['--index'] !== undefined && value['--index'] > 0xffff) throw Error('--index is a u16');
   const run = path.resolve(runDirectory);
   const engine = path.join(run, 'switch2');
   const current = JSON.parse(await fs.readFile(path.join(engine, 'current-acquisition.json'), 'utf8'));
@@ -106,55 +131,48 @@ async function main() {
     return;
   }
   if (forcedUid) uids.splice(0, uids.length, Buffer.from(forcedUid.replace(/^0x/i, ''), 'hex'));
-  if (!uids.length) uids.push(Buffer.alloc(16));
   if (uids.some(uid => uid.length !== 16)) throw Error('uid must be 16 raw bytes');
 
-  let save = null;
-  let chosen = null;
+  const spaces = value['--space'] === undefined ? [1, 4] : [value['--space']];
+  const types = value['--type'] === undefined ? [1, 3, 2, 5, 4] : [value['--type']];
+  const ranks = value['--rank'] === undefined ? (all ? [0, 1] : [0]) : [value['--rank']];
+  const index = value['--index'] === undefined ? 0 : value['--index'];
+  const staticId = value['--static-id'] === undefined ? 0 : value['--static-id'];
+  // uid 0 is savecommon for Account saves and the documented shape for Device/
+  // Bcat/Cache; plan() orders it correctly and dedupes an explicit zero uid.
+  const candidates = plan({spaces, types, ranks, index, staticId, uids, all});
+  if (all) console.error('--all: probing every selected space/type/rank/user; ' +
+    'narrow with --space/--type if the session drops');
+
+  const archives = [];
+  let openHandle = null;
   try {
-    // Types beyond Account/System matter: some titles (SmileBASIC 4 retail among
-    // them) keep their save as a Device save, which an Account-only sweep reports
-    // as "no save data".
-    const spaces = onlySpace === null ? [1, 0, 3, 4] : [onlySpace];
-    const types = onlyType === null ? [1, 0, 3, 4, 5] : [onlyType];
-    if (onlySpace !== null || onlyType !== null)
-      console.error('targeted open: space=' + spaces.join('/') + ' type=' + types.join('/'));
-    for (const space of spaces) {
-      for (const type of types) {
-        for (const uid of uids) {
-          const input = Buffer.alloc(0x48);
-          input[0] = space;
-          input.writeBigUInt64LE(programId, 8);
-          uid.copy(input, 0x10);
-          input[0x28] = type;
-          const reply = await s.ipc('Open save data (read-only)', root, 53, input);
-          console.error(`  space=${SPACES[space] ?? space} type=${TYPES[type] ?? type} ` +
-            `uid=${uid.toString('hex').slice(0, 16)} -> ${reply.result ? code(reply.result) : 'ok'}`);
-          if (!reply.result && reply.moves.length === 1) {
-            save = reply.moves[0];
-            chosen = {space, type, uid};
-            break;
-          }
-        }
-        if (save !== null) break;
-      }
-      if (save !== null) break;
+    for (const candidate of candidates) {
+      const referenceId = candidate.type === 0 || candidate.type === 6 ? 0n : programId;
+      const input = build({...candidate, referenceId});
+      const reply = await s.ipc('Open save data (read-only)', root,
+        openCommand(candidate.type), input);
+      console.error(`  ${archiveText(candidate)} -> ${reply.result ? code(reply.result) : 'ok'}`);
+      if (reply.result || reply.moves.length !== 1) continue;
+      archives.push({handle: reply.moves[0], ...candidate});
+      if (!all) break;
     }
-    if (save === null) throw Error('No save filesystem opened for 0x' + programId.toString(16));
-    if (process.argv.includes('--filetime')) {
+    if (archives.length === 0) {
+      throw Error('No save filesystem opened for 0x' + programId.toString(16) +
+        ' (tried ' + candidates.length + ' attribute combinations)');
+    }
+
+    if (flags.has('--filetime')) {
+      if (archives.length !== 1)
+        throw Error('--filetime needs exactly one archive; add --space/--type/--rank');
+      openHandle = archives[0].handle;
       // Probe IFileSystem's timestamp command: same technique that found the
       // working save-info reader (try the plausible shapes, print each result).
       const {packet} = require(path.join(run, 'shared/ipc.cjs'));
       const domain = require(path.join(engine, 'app/domain.cjs'));
       const out = s.base + 0x6000;
       const pathAddr = s.base + 0x2000;
-      const buf = Buffer.alloc(0x304);
-      Buffer.from(process.env.FTIMEPATH || '/').copy(buf);
-      await s.write(pathAddr, buf);
-      await s.write(out, Buffer.alloc(0x40));
       const target = process.env.FTIMEPATH || '/account.sav';
-      // Sweep output sizes and path encodings: the call reached FS but was refused,
-      // so the remaining unknowns are the reply struct size and the path buffer.
       for (const outSize of [8, 0x10, 0x18, 0x20, 0x28]) {
         for (const [variant, pathSize] of [['exact', Buffer.byteLength(target) + 1],
                                             ['padded', 0x301]]) {
@@ -166,49 +184,46 @@ async function main() {
             send: [{address: pathAddr, size: pathSize}],
             receive: [{address: out, size: outSize}]}});
           try {
-            const reply = await domain.send(s, 'filetime', save, bytes);
-            const code = Number(reply.result) & 0x3fffff;
-            const data = code ? null : await s.read(out, outSize);
-            console.log(`12 out=${outSize} path=${variant} -> 0x${code.toString(16)}` +
+            const reply = await domain.send(s, 'filetime', openHandle, bytes);
+            const result = Number(reply.result) & 0x3fffff;
+            const data = result ? null : await s.read(out, outSize);
+            console.log(`12 out=${outSize} path=${variant} -> 0x${result.toString(16)}` +
               (data ? '  ' + data.toString('hex') : ''));
           } catch (error) {
             console.log(`12 out=${outSize} path=${variant} -> threw ${error.message}`);
           }
         }
       }
-      await s.close(save).catch(() => {});
       return;
     }
-    console.error(`mounted space=${SPACES[chosen.space] ?? chosen.space} ` +
-      `type=${TYPES[chosen.type] ?? chosen.type} uid=${chosen.uid.toString('hex')}`);
 
-    if (listOnly) {
-      let count = 0, total = 0;
-      const stampTargets = [];
-      async function show(directory) {
-        const entries = await filesystem.listDirectory(s, save, directory, 2048);
-        for (const entry of entries) {
-          const full = (directory.endsWith('/') ? directory : directory + '/') + entry.name;
-          const opened = await filesystem.openFile(s, save, full);
-          if (!opened.result) {
-            const size = Number(await filesystem.fileSize(s, opened.handle));
-            await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
-            console.log(`${String(size).padStart(9)}  ${full}`);
-            if (stampTargets.length < 8) stampTargets.push(full);
-            count += 1; total += size;
-          } else {
-            console.log(`${'<dir>'.padStart(9)}  ${full}/`);
-            await show(full);
-          }
+    async function show(save, directory, state) {
+      const entries = await filesystem.listDirectory(s, save, directory, 2048);
+      for (const entry of entries) {
+        const full = (directory.endsWith('/') ? directory : directory + '/') + entry.name;
+        const opened = await filesystem.openFile(s, save, full);
+        if (!opened.result) {
+          const size = Number(await filesystem.fileSize(s, opened.handle));
+          await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
+          console.log(`${String(size).padStart(9)}  ${full}`);
+          if (state.stampTargets.length < 8) state.stampTargets.push(full);
+          state.count += 1; state.total += size;
+        } else {
+          console.log(`${'<dir>'.padStart(9)}  ${full}/`);
+          await show(save, full, state);
         }
       }
+    }
+
+    async function newestStamp(save, targets) {
       // Newest write time, if the filesystem exposes GetFileTimeStampRaw (cmd 12).
       let newest = 0;
       try {
         const {packet} = require(path.join(run, 'shared/ipc.cjs'));
         const {u64} = require(path.join(engine, 'app/session.cjs'));
+        const domain = require(path.join(engine, 'app/domain.cjs'));
         const out = s.base + 0x6000;
-        for (const full of stampTargets) {
+        for (const full of targets) {
           const text = Buffer.from(full, 'utf8');
           if (text.length >= 0x301) continue;
           const pathBuf = Buffer.alloc(0x304);
@@ -226,14 +241,10 @@ async function main() {
           if (value > newest) newest = value;
         }
       } catch { /* timestamps are optional */ }
-      await show('/');
-      console.log(`listed ${count} files, ${total} bytes` +
-        (newest ? `, newest ${Math.floor(newest / 1000000000)}` : '') + ' (read-only, nothing written)');
-      return;
+      return newest;
     }
-    await fs.mkdir(outputDirectory, {recursive: true});
-    let files = 0, bytes = 0;
-    async function walk(directory, disk) {
+
+    async function walk(save, directory, disk, state) {
       const entries = await filesystem.listDirectory(s, save, directory, 2048);
       await fs.mkdir(disk, {recursive: true});
       for (const entry of entries) {
@@ -253,21 +264,42 @@ async function main() {
           }
           await file.close();
           await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
-          files += 1; bytes += size;
+          state.files += 1; state.bytes += size;
           console.error(`  ${full} (${size} bytes)`);
         } else {
-          await walk(full, target);
+          await walk(save, full, target, state);
         }
       }
     }
-    await walk('/', outputDirectory);
-    console.error(`done: ${files} files, ${bytes} bytes -> ${outputDirectory}`);
+
+    for (const archive of archives) {
+      openHandle = archive.handle;
+      console.error(`mounted ${archiveText(archive)}`);
+      if (listOnly) {
+        if (all) console.log(`archive ${archiveText(archive)}`);
+        const state = {count: 0, total: 0, stampTargets: []};
+        await show(openHandle, '/', state);
+        const newest = await newestStamp(openHandle, state.stampTargets);
+        console.log(`listed ${state.count} files, ${state.total} bytes` +
+          (newest ? `, newest ${Math.floor(newest / 1000000000)}` : '') +
+          ' (read-only, nothing written)');
+      } else {
+        const target = all ? path.join(outputDirectory, archiveDir(archive)) : outputDirectory;
+        const state = {files: 0, bytes: 0};
+        await walk(openHandle, '/', target, state);
+        console.error(`done: ${state.files} files, ${state.bytes} bytes -> ${target}`);
+      }
+      if (!keepOpen) {
+        await s.close(openHandle).catch(() => s.handles.delete(openHandle));
+        openHandle = null;
+      }
+    }
   } finally {
     if (keepOpen) {
       console.error('--keep-open: leaving the save mounted and the session alive');
       return;
     }
-    if (save !== null) await s.close(save).catch(() => s.handles.delete(save));
+    if (openHandle !== null) await s.close(openHandle).catch(() => s.handles.delete(openHandle));
     await s.cleanup().catch(() => {});
   }
 }
