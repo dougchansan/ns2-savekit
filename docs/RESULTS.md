@@ -1851,3 +1851,29 @@ archive with 289 files), but a save with a very large single file or more than 2
 entries in one directory has not been. Nintendo Switch Sports Resort proves the
 space/type discovery works: its save is a **Device** save with an all-zero uid, which
 a User/Account-only tool would have reported as "no save data".
+
+## 2026-10-30 18:46: the pinned repeat works; the failure moved two stages deeper
+
+The run that failed at 18:46 was not the old failure. Its report says:
+
+```
+markerSelected: true
+markerReproduced: true
+error: The bounded native leak contains no qualified, encodable link candidate
+```
+
+`markerReproduced: true` is the fix from 2026-10-29 16:45 being exercised on hardware:
+the repeat of the canary overwrite is now pinned to the offset that qualified, and it
+succeeded. It had failed on every boot since the fix was written, because those boots
+never got past the canary.
+
+From there the run went further than any previous boot: the cache-alias path ran
+(`profile: cache-combined-leak-0-0-0-1`, `cache.selectedAlias` true), the combined
+acquisition required a qualified native over-read, and it failed finding an
+**encodable link candidate** - `probe-reserved-gap.cjs:962`. That is two stages past
+the canary.
+
+So the acquisition failure has moved, not vanished. What remains is a heap-layout
+requirement in the native-link phase (an address candidate the planner can encode),
+which retries may or may not satisfy; it is not the same flake as before and should
+not be diagnosed with the canary's history.
