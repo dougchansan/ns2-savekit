@@ -1612,3 +1612,30 @@ must be re-stamped.
 The measured limit stands: **11 characters** (`HOMEBREW` fits, `HOMEBREWLAUNCHER`
 does not). `--allow-overlap` writes past the block, into the thumbnail's black
 margin, and is explicitly marked unproven on a console.
+
+## 2026-10-29 16:59: the artwork chooser's data path
+
+The chooser now exists as three pieces that can be tested without a console, plus
+the one piece that cannot be written yet.
+
+| piece | state |
+| --- | --- |
+| `tools/artwork-build.cjs` | builds 40x69 BGRA blobs (11040 bytes) from PNGs or four built-in samples, writes `index.txt`, optionally a contact sheet |
+| `payloads/ns2jb-artwork.lua` | reads the index, selects an entry, applies it through the metadata library, reports what it did |
+| `payloads/ns2jb-metadata.lua` | the byte surgery (see above) |
+| the grid of previews | **not written**: the engine's drawing and input API is unknown |
+
+`lua tests/test_artwork_lua.lua` runs the payload against a stub engine and
+filesystem: 8/8, covering "no index", default selection, selection by file name,
+selection by title, an unknown name, a missing metadata library, the success dialog's
+list, and that the applied META keeps its 11152-byte size.
+
+What is honest about the UI: only `dialog` and `jump` tags are proven on this engine,
+so the selection is read from `save:/art/choice.txt` (line 1 artwork, line 2 project
+name) rather than drawn. The data path and the write path do not change when a
+drawing API becomes known - only `choose()` gets a real picker in front of it. The
+built-in samples render as expected (`docs/images/2026-10-29-artwork-sheet.png`).
+
+The measured name limit still applies end to end: the chooser refuses to write more
+than the 22-byte block unless `--allow-overlap` is passed, so a chosen name has to be
+11 characters or fewer.
