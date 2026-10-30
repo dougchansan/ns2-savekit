@@ -767,3 +767,179 @@ So moving the save to the SD card is not just "insert a card": it changes the FS
 save allocation the heap groom depends on, and the groom has not been re-tuned for
 it. The card can stay for game-side tests, but a 4/4 session today needs the save
 back on internal storage (and, per the earlier note, the card out).
+
+---
+
+# 2026-10-29: input was never broken; there is no SD card; stage 2 fails at the canary
+
+Everything below was measured against the same retail console, docked, with the
+capture card and the ESP32-S2 devboard attached. Frames are in `docs/images/`.
+
+## The board was in keyboard mode all along, and `/status` was lying
+
+The prompt for this session said the board ran `hid-pad-1`, whose `/type` returns
+`{"ok":true}` and types nothing. Both halves were wrong, and the second one is a
+tooling bug worth keeping in mind:
+
+| probe | result | what it means |
+| --- | --- | --- |
+| `GET /status` | `"fw":"hid-pad-1"`, `padButtons`, `hat` | **always this string in every build** |
+| `GET /pad` | **404** | the pad endpoints are compiled out |
+| `GET /usb` over 9 s | `readyChecks` stays **0**, `reportsSent` 0 | `streamPad()` is compiled out |
+| `GET /type?text=1` then `PRINT 1` | screen showed `1PRINT 1` | **typing works**; the `1` and the next line coalesced |
+| `PRINT 1` alone | prints `1` (frame `2026-10-29-input-print1.png`) | keyboard HID is fine |
+
+`esp32_hid.ino`'s `/status` handler had an unconditional `"fw":"hid-pad-1"` literal,
+so *every* build of that sketch claimed to be the pad build. That is why "OTA
+silently failed to replace the pad firmware": the OTA had worked, and the status
+string could not show it. The handler now reports the build it was compiled as
+(`hid-kb-1` / `hid-pad-1` / `hid-both-1` plus `keyboard` and `padEndpoints`
+booleans), and the keyboard build reports
+`{"fw":"hid-kb-1","keyboard":true,"padEndpoints":false}`.
+
+## OTA works in both directions, unattended
+
+`espota.py` against `192.168.50.215:3232` replaced the firmware with no hands on
+the board, twice in one session:
+
+| wrote | board then reported | evidence |
+| --- | --- | --- |
+| `esp32_pro.ino.bin` (1,008,064 B, `/bridge` + `/flipper/*` present) | `fw: pro-2` | `/usb` `handshake:true`, `pairStep:4` after boot |
+| `esp32_hid.ino.bin` (`-DKEY_ONLY`) | `fw: hid-kb-1`, `padEndpoints:false` | `/type` typed the exploit lines |
+
+The Pro Controller persona is adopted by this console with no pairing UI
+(`descRequests:1`, host init `80:05 80:01 80:02 1:03 80:04 1:48 ... 1:30`), which is
+what makes an unattended cycle possible: pad firmware to navigate the home menu,
+keyboard firmware to type inside SmileBASIC. Both flashes fit inside the console's
+awake window.
+
+## Home menu navigation by OCR works, including System Settings
+
+With the pad adopted, the cycle selected the retail SmileBASIC tile by reading the
+label above the focused tile (`•SmileBASIC 4`, then `SmileBASIC 4 Demo Version`,
+then `Nintendo Switch Sports Resort`), pressed A, and dismissed the account picker,
+the tag-information dialog and its network error (`2155-8007`) to reach direct mode.
+Frame `2026-10-29-home-retail-tile.png`.
+
+Inside System Settings the icon row was walked the same way, reading the label
+under the icons: `Nintendo Switch Online, GameChat, News, Nintendo eShop, Album,
+GameShare, Controllers, Virtual Game Cards, System Settings`.
+
+## There is no SD card in the console
+
+`System Settings > Data Management`, read on screen (frame
+`2026-10-29-settings-no-sdcard.png`):
+
+```
+System memory      Space available  173 GB
+microSD Express card                Not inserted
+```
+
+That settles a question the design was built on: **no `main` can be placed on the SD
+card right now, and `OpenSdCardFileSystem` cannot be exercised with a card
+present.** The SD route is blocked by the physical state of the console, not by the
+exploit. It also means SmileBASIC's save is necessarily on internal storage, so the
+earlier "save moved to the SD card" condition (pin cost 14992) does not apply to
+today's runs.
+
+## Stage 2: two failures, with the exact step and numbers
+
+Success is `switch2/ro/root/current-root.json`; the acquisition writes one `STEP`
+line per setup call and a JSON report per attempt.
+
+| run | attempt | where it stopped | numbers |
+| --- | --- | --- | --- |
+| `switch2-tzBAZl` 13:44 | 1 | `STEP clone-save` → joinAll | `Native batch did not terminate; resources retained` |
+| `switch2-tzBAZl` 13:44 | 2 | after `free-space save` | `Console response timed out` (app already wedged) |
+| `switch2-YzLRzL` 13:57 | 1 | after metadata + canary waves | **`Overwrite missed the qualified canary`**, `metadataAttempts 4`, `waveAttempts 30`, `freeSpace.save 66,977,792` (required 20,971,520), `freeSpace.tmp 491,520` (required 65,536) |
+| `switch2-YzLRzL` 13:57 | 2 | — | `Console response timed out`, `freeSpace.save` down to `50,184,192` |
+
+Readings that follow from it:
+
+- `clone-save` was **not** an SD-card stall (no card is inserted); the first attempt
+  passed it, and the step marker's other meaning - the native worker stalling -
+  is what happened.
+- The canary miss is the same failure recorded on 2026-10-28 as `iStKAD`, and the
+  pin-cost assertion did not fire, so the 13616/14992 gate is not what stops it now.
+- A wedged attempt costs the *next* attempt inside the same run (it starts against a
+  console that is still inside the previous native call), so **one attempt per boot**
+  is the operating rule; the in-run retry loop cannot recover through a wedge.
+- 66 MB is free in SmileBASIC's save, so the "20 MiB save as storage" fallback has
+  more room than the prompt assumed.
+
+## NSO verification is implemented and tested (host side)
+
+`tools/nso-verify.cjs` parses the header per switchbrew's NSO0 layout, checks magic,
+version, reserved word, unknown flags, section file ranges (in order, non-overlapping,
+inside the file), page-aligned memory offsets, module name at 0x100, and then LZ4
+decompresses each compressed section and compares its SHA-256 with the hash in the
+header. Section layout is confirmed by arithmetic on the real files:
+
+```
+main: text 0x108+0x1786d9 = rodata 0x1787e1; +0x98584 = data 0x210d65; +0xfbb5 ≈ 0x220d5a = filesize
+```
+
+Measured on three genuine exefs segments: `main` (module `Artemis`), `rtld`
+(`nnrtld`), `sdk` (`nnSdk`) - **all three section hashes verify**, which is what
+proves the LZ4 decoder rather than assuming it. `tests/test_nso_verify.cjs` builds
+an uncompressed NSO, then corrupts it four ways; 13/13 pass:
+
+```
+synthetic uncompressed NSO passes           flipped byte in real NSO -> exit 3
+text offset inside the header -> exit 3     truncated real NSO -> exit 3
+data past EOF -> exit 3                     missing file -> exit 4 (not 3)
+zeroed text -> exit 3                       --no-hash still checks structure
+```
+
+One real anomaly: the demo's `main` declares `bss = 0x22010c70` (~571 MB) while
+`rtld` and `sdk` declare small bss. bss is not page aligned in any of them, so
+alignment is only a note; 571 MB is large enough to be worth a second look, but the
+file's hashes are intact, so the header is self-consistent.
+
+## SmileBASIC program metadata: what is where
+
+The prompt pointed at `saves/all/Seedsow-Lullaby-demo/f/###/META`; that path does not
+exist. The SmileBASIC 4 save is a separate title (`saves/all/SmileBASIC-4-demo/`)
+and contains exactly five files:
+
+| file | size | content |
+| --- | --- | --- |
+| `f/###/META` | 11152 | header + name + thumbnail (below) |
+| `f/###/TNS2` | 2986 | the `TXT:NS2` program (our bootstrap) |
+| `f/###/T@BACKUP.TXT` | 2960 | `TXT:@BACKUP.TXT` |
+| `config.dat` | 4416 | `c4BS` magic, then 64-byte-ish tool entries `#TOOL/SBSMILE.PRG`, `#TOOL/GAHAKU.PRG` |
+| `tag.dat` | 14004 | **100% zero except one byte** - no tags set |
+
+`META` is exactly `0x70 + 40*69*4 = 11152` bytes, and the 11040-byte tail renders a
+crisp 40x69 32-bit gear-smiley icon (any other width/start gives a sheared image).
+But the same offset 0x70 holds the UTF-16 text `PCPM0005` + `[WORKSPACE]`, and the
+program list on screen does show `[WORKSPACE]` in the bottom-left of direct mode. So
+the name bytes and the pixel data overlap, and one of two readings must be true:
+
+1. the file is `0x70` header + `PCPM0005` + name + pixels, and the "crisp icon" is
+   the icon area starting later than 0x70; or
+2. the icon really starts at 0x70 and the name is painted into its first pixels.
+
+Neither has been proven, and the prompt's "look at the files and mutate a backup" step
+is exactly the experiment that settles it: rename the workspace on the console, pull
+the save, diff `META`. That needs a live session and is the next metadata step.
+
+## Name and artwork on the HOME MENU are not reachable from a save
+
+This is the claim the mission asked to settle before promising anything, and the
+answer is the pessimistic one:
+
+- the tile's name and artwork on the HOME menu are metadata of the **title**, in its
+  control data (the NACP inside the signed control NCA). Save data is a separate,
+  writable archive; nothing in it is consulted for the tile;
+- observed on this console: the HOME tile reads **`SmileBASIC 4`**, while the
+  save-controlled workspace name is **`[WORKSPACE]`** and the store contains `NS2`.
+  Three different strings - the menu is not reading our save for the tile;
+- no NACP was available in this session to inspect directly (the exefs/romfs dumps on
+  the host contain no control NCA), so the NACP statement rests on the platform
+  layout plus that observation, **not** on a failed rename attempt.
+
+Therefore the launcher entry that can honestly be renamed is the **program/project
+entry inside SmileBASIC** (its name and thumbnail, in the save), or the Seedsow save's
+own launcher path - not the HOME tile. No home-menu rename is claimed anywhere in
+this repository.
