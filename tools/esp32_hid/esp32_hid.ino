@@ -208,10 +208,28 @@ void setup() {
   for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(500);
   Serial.println(WiFi.localIP());
 
+  // This string used to be unconditional, so every build of this sketch answered
+  // "hid-pad-1" - which made a successful OTA look like a failed one, and made a
+  // keyboard-only board look like it had a pad. Report what was actually built.
+#if defined(KEY_ONLY)
+#define FW_BUILD "hid-kb-1"
+#elif defined(PAD_ONLY)
+#define FW_BUILD "hid-pad-1"
+#else
+#define FW_BUILD "hid-both-1"
+#endif
   server.on("/status", [] {
     server.send(200, "application/json",
       String("{\"ok\":true,\"ip\":\"") + WiFi.localIP().toString() +
-      "\",\"fw\":\"hid-pad-1\",\"padButtons\":" + ((padReport[1] << 8) | padReport[0]) +
+      "\",\"fw\":\"" FW_BUILD "\""
+#ifdef KEY_ONLY
+      ",\"keyboard\":true,\"padEndpoints\":false"
+#elif defined(PAD_ONLY)
+      ",\"keyboard\":false,\"padEndpoints\":true"
+#else
+      ",\"keyboard\":true,\"padEndpoints\":true"
+#endif
+      ",\"padButtons\":" + ((padReport[1] << 8) | padReport[0]) +
       ",\"hat\":" + padReport[2] + "}");
   });
 
