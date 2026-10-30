@@ -943,3 +943,92 @@ Therefore the launcher entry that can honestly be renamed is the **program/proje
 entry inside SmileBASIC** (its name and thumbnail, in the save), or the Seedsow save's
 own launcher path - not the HOME tile. No home-menu rename is claimed anywhere in
 this repository.
+
+## 2026-10-29 later: five boots, five stage-2 failures, and what that means
+
+After the measurements above, five full boots were driven end to end with the new
+harness (OTA pro -> power cycle -> OCR to retail SmileBASIC -> OTA keyboard -> type
+the four lines). Every boot reached direct mode; every boot failed stage 2, at a
+*different* step each time:
+
+| boot | run | stopped at | numbers |
+| --- | --- | --- | --- |
+| 13:44 | `tzBAZl` | `clone-save` | `Native batch did not terminate; resources retained` |
+| 13:44 | `tzBAZl` | (in-run retry) | `Console response timed out` |
+| 13:57 | `YzLRzL` | canary | `canaryChanged:true`, `markerSelected:false`, 4 metadata, 30 waves, free 66,977,792 vs 20,971,520 |
+| 14:06 | `HUNLNS` | after canary landed | `canaryChanged:true`, `markerSelected:true`, then `Console response timed out` |
+| 14:16 | `2QJTXK` | `clone-save` again | stalled 2 min, then acquisition aborted |
+
+The screen after the last failure showed `BOOT OK 3925528160 / HOST CONNECTED /
+RPC RUNNING` - the application is **alive and wedged inside our native batch**, not
+crashed (no `2162-0002`). So the failures are not "the console died"; they are the
+in-app native worker failing to complete, at whichever step it happens to stall.
+
+Because the failure point moves between boots, this is a placement/timing race in
+the groom rather than one broken call, and repeating the same boot is not a
+measurement. The reading that does follow: stage 2 succeeded 7 times on 2026-10-28
+and has failed 5/5 today on the same game binary (`sdkCrc32 3925528160`), so
+something about the environment changed and has not been identified. The
+non-timeout knob that exists (`NS2_CONSOLE_TIMEOUT_MS`, `NS2_NATIVE_TIMEOUT_MS`)
+only moves the failure, per the commit that added it.
+
+## Harness defects found by running it (both now fixed)
+
+| symptom | cause | fix |
+| --- | --- | --- |
+| confirm dialog stayed up, then `RUN` typed into it | the console **drops the first HID report** after a re-enumeration, so the first Enter never landed | prime the keyboard with a bare Shift after every flash, and retry Enter until the dialog is gone |
+| harness aborted although the console printed the marker | Vision splits `Out of memory (REMOVE)` across lines, and the pattern was the whole sentence | match the distinctive word (`memory`, `boot\s*ready`) instead |
+
+## SmileBASIC `META`: the name is 32 bytes inside the thumbnail
+
+`META` is `0x70` header + `40*69*4 = 11040` bytes. The thumbnail is BGRA at `0x70`
+(verified pixel-for-pixel against an independent decoder: 0 differing pixels), and
+the file's first pixels are literally the metadata:
+
+```
+row 0, pixels 0..7:  50 43 50 4d | 30 30 30 35 | 5b 00 57 00 | ...
+                     "PCPM"       "0005"        "[W"
+```
+
+So the layout is: 8-byte tag `PCPM0005` + a **NUL-terminated UTF-16 name, filling a
+32-byte block** at `0x70..0x8f`, which overlaps the thumbnail's first 8 pixels (a
+black margin, so nothing is visibly lost). `[WORKSPACE]` is 11 characters = 22 bytes
++ NUL = 24, exactly filling the block after the tag.
+
+Consequences, stated as what is measured and what is not:
+
+- measured: the name occupies at most 32 - 8 = 24 bytes, i.e. **11 characters plus
+  NUL** in this sample, and the `[WORKSPACE]` label is what direct mode draws;
+- not measured: whether the engine reads the name to the NUL (variable length) or to
+  a fixed 32-byte boundary. **"Homebrew Launcher" (17 characters) does not fit the
+  observed block**, so the launcher name will have to be shortened (e.g.
+  `HOMEBREW`) unless a rename experiment shows the field grows;
+- the experiment that settles it is: rename on the console, pull the save, diff
+  `META` (`node tools/smb-meta.cjs diff old new`). It needs a live session.
+
+`tag.dat` is 14003 zero bytes out of 14004, so no tags exist to carry a name;
+`config.dat` is a `c4BS` list of tool programs (`#TOOL/SBSMILE.PRG`,
+`#TOOL/GAHAKU.PRG`), not the program list.
+
+## Payload v1 exists, and refuses to lie about execution
+
+`payloads/ns2jb-launcher.lua` + `payloads/nso-verify.lua` implement the part of the
+launcher the sandbox can actually do, and say so on screen:
+
+| condition | dialog |
+| --- | --- |
+| no `sd:` at all (measured on this console) | `missing main on sd card` + `sd: not available in this sandbox` |
+| `sd:` present, no `main` | `missing main on sd card` + `file not found` |
+| `main` is not an NSO0, or is truncated | `invalid main on sd card` + the reason |
+| `main` passes the header checks | `main verified: <module>` + sizes + `execution needs FS privileges - not done` |
+
+It does **not** execute `main`, and the dialog says so: execution needs a native
+loader with FS privileges, nothing measured gives the Lua sandbox one (io yes,
+io.popen no, `sd:` refused, no native load proven), and the escalating step lives in
+the BASIC bootstrap which needs a host. A payload that claimed to run `main` from
+Lua would be reporting something that has not happened.
+
+Offline tests (`lua tests/test_payload_lua.lua`, 13/13) drive the launcher against a
+stubbed engine and filesystem, and run `nso-verify.lua` against the demo's real
+`main`: structure accepted, `contentsVerified = false` (no LZ4 in the sandbox), and
+the launcher's dialog says `contents not hashed`.
