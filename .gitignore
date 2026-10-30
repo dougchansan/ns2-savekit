@@ -9,5 +9,5 @@ __pycache__/
 config/titledb-cache.json
 config/uids.json
 config/titles.local.json
-tools/esp32_hid/wifi_secret.h
+tools/*/wifi_secret.h
 tools/esp32_hid/build_opt.h
