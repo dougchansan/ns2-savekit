@@ -276,13 +276,20 @@ void setup() {
   });
 
 #ifndef PAD_ONLY
+  // /key?code=40[&ms=800] presses one HID usage for ms (default 20). The hold
+  // matters for UI that distinguishes tap from hold - SmileBASIC's PLAYMENU
+  // advertises "A Hold for Submenu", and a 20 ms tap only starts the project.
   server.on("/key", [] {
     if (!server.hasArg("code")) { server.send(400, "application/json", "{\"ok\":false}"); return; }
     uint8_t code = server.arg("code").toInt();
+    long ms = server.hasArg("ms") ? server.arg("ms").toInt() : 20;
+    if (ms < 1) ms = 1;
+    if (ms > 4000) ms = 4000;
     keyboard.pressRaw(code);
-    delay(20);
+    delay((unsigned long)ms);
     keyboard.releaseRaw(code);
-    server.send(200, "application/json", "{\"ok\":true}");
+    server.send(200, "application/json",
+      String("{\"ok\":true,\"code\":") + code + ",\"ms\":" + ms + "}");
   });
 
   server.on("/type", [] {
