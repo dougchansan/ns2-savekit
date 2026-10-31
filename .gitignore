@@ -8,3 +8,4 @@ __pycache__/
 config/titledb-cache.json
 config/uids.json
 config/titles.local.json
+config/titles.nacp.json

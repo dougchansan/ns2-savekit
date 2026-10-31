@@ -137,9 +137,9 @@ function main() {
     const unnamed = titles.unnamed(ids);
     if (unnamed.length) {
       console.log(`\nnote: ${unnamed.length} of ${ids.length} titles ` +
-        `${unnamed.length === 1 ? 'has' : 'have'} no name. titledb is a Switch 1`);
-      console.log('catalogue, so it cannot name a Switch 2 title; demos/trials and some new');
-      console.log('releases are missing from it too.');
+        `${unnamed.length === 1 ? 'has' : 'have'} no name. Names come from the console's`);
+      console.log('own control data first; titledb is a Switch 1 catalogue, so it cannot name');
+      console.log('a Switch 2 title, and it has no entry for some demos/trials or new releases.');
       if (!refreshed) console.log('(titledb could not be fetched - connect once with network access for names)');
       console.log('add them to config/titles.local.json (keep any existing entries):');
       console.log('  ' + titles.namesStub(unnamed));

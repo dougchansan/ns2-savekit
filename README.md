@@ -73,6 +73,11 @@ several save operations per boot usually work; restart the console only if one
 actually fails. the one thing that reliably breaks the next session is leaving a
 previous one open (`--keep-open`, a diagnostic only).
 
+titles are listed from every storage ncm has a database for (internal, sd card,
+game card), and named from the console's own control data, not from a catalogue:
+that is the only way a switch 2 title gets a name, and the names are cached in
+`config/titles.nacp.json`. `--no-names` skips the read.
+
 ## any title, by hand
 
 ```sh
@@ -117,7 +122,7 @@ game look for `save9999.dat` at boot.
 | `SESSION LOST` / `transport 0xf601` during a pull or write | the console stopped answering | restart the console, reopen SmileBASIC, start a new session |
 | `NO LIVE HOST` / `memory.sock` | the session folder is stale or gone | start the host again and use the run folder it prints |
 | title listed without `✔` | it is not on your write allowlist | add its id to `config/titles.local.json` |
-| names are missing, ids only | titledb is a Switch 1 catalogue, so it cannot name Switch 2 titles, and it has no entry for some demos/trials or new releases | run once with network for the Switch 1 names; paste the stub the tools print into `config/titles.local.json` |
+| names are missing, ids only | the console gave no name for that id (no control data, or the read was refused) and titledb is a Switch 1 catalogue, so it cannot name a Switch 2 title | paste the stub the tools print into `config/titles.local.json`; console names that were read are cached in `config/titles.nacp.json` |
 
 ## tests
 
@@ -129,7 +134,9 @@ node tests/test_inventory.cjs        # inventory reporting (7)
 node tests/test_save_attr.cjs        # save attribute packing (9)
 node tests/test_save_tree.cjs        # save walk: types, failures, limit (6)
 node tests/test_app_storages.cjs     # app list: storages, dedupe (8)
-node tests/test_titles.cjs           # name fallbacks (5)
+node tests/test_nacp.cjs             # console name block, plain and deflated (9)
+node tests/test_console_names.cjs    # name read: services, buffers (11)
+node tests/test_titles.cjs           # name layers and the console cache (8)
 node tests/test_restore_manifest.cjs # generic restore path (6)
 node tests/test_nso_verify.cjs       # NSO0 parsing, LZ4, hashes (13)
 node tests/test_smb_meta.cjs         # META name block surgery (5)

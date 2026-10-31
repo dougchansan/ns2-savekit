@@ -66,7 +66,8 @@ async function refresh(maxAgeMs = 7 * 24 * 3600 * 1000) {
 function available() {
   const known = Object.keys(load()).length;
   const local = Object.keys(localNames()).length;
-  return known + local > 0;
+  const consoleNames = Object.keys(deviceNames()).length;
+  return known + local + consoleNames > 0;
 }
 
 let overrides = null;
@@ -95,10 +96,42 @@ function localNames() {
   return overrides;
 }
 
+// Names read from the console's own control data (tools/list-apps.cjs), cached
+// because they cost one session read per title and never change. This is the
+// only layer that can name a Switch 2 title, and it is gitignored like uids.json.
+const DEVICE_CACHE = path.join(__dirname, '..', '..', 'config', 'titles.nacp.json');
+let device = null;
+
+function deviceNames() {
+  if (device) return device;
+  device = {};
+  try { device = JSON.parse(fs.readFileSync(DEVICE_CACHE, 'utf8')); } catch { /* none yet */ }
+  return device;
+}
+
+// True when the cache changed; false when there was nothing new to write.
+function rememberDeviceNames(names) {
+  const fresh = Object.entries(names || {})
+    .filter(([id, value]) => typeof value === 'string' && value &&
+      deviceNames()[String(id).toLowerCase()] !== value);
+  if (!fresh.length) return false;
+  const merged = {...deviceNames()};
+  for (const [id, value] of fresh) merged[String(id).toLowerCase()] = value;
+  try {
+    fs.mkdirSync(path.dirname(DEVICE_CACHE), {recursive: true});
+    fs.writeFileSync(DEVICE_CACHE, JSON.stringify(merged, null, 2) + '\n');
+    device = merged;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function name(id) {
   const key = String(id).toLowerCase();
-  // Local names win: they cover what titledb cannot (demos, trials, Switch 2).
-  return localNames()[key] || load()[key] || null;
+  // Local names win (a curated name beats a machine one); the console names what
+  // titledb cannot (Switch 2); titledb names the rest.
+  return localNames()[key] || deviceNames()[key] || load()[key] || null;
 }
 
 // Ids no layer can name. Demos/trials have no app id in titledb, and new or
@@ -137,4 +170,5 @@ function slug(id) {
   return clean || String(id).toLowerCase();
 }
 
-module.exports = {refresh, name, label, slug, available, unnamed, namesStub, cachePath: CACHE};
+module.exports = {refresh, name, label, slug, available, unnamed, namesStub, deviceNames,
+  rememberDeviceNames, cachePath: CACHE, deviceCachePath: DEVICE_CACHE};

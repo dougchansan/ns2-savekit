@@ -79,6 +79,51 @@ test('config/titles.local.json overrides the cache', () => {
   assert.strictEqual(r.names[id], 'Mine');
 });
 
+test('a name read from the console beats titledb and is reused', () => {
+  const id = '01001234567890ab';
+  const r = probe([id], {
+    'titledb-cache.json': {[id]: 'Switch 1 catalogue entry'},
+    'titles.nacp.json': {[id]: 'Welcome Tour'},
+  });
+  assert.strictEqual(r.names[id], 'Welcome Tour');
+  assert.deepStrictEqual(r.unnamed, []);
+});
+
+test('a curated local name still beats the console name', () => {
+  const id = '01001234567890ac';
+  const r = probe([id], {
+    'titles.nacp.json': {[id]: 'Console Name'},
+    'titles.local.json': {names: {[id]: 'My Name'}},
+  });
+  assert.strictEqual(r.names[id], 'My Name');
+});
+
+test('a console name is written once and only when it changes', () => {
+  const dir = fs.mkdtempSync(path.join(tmp, 'cache-'));
+  fs.mkdirSync(path.join(dir, 'tools/lib'), {recursive: true});
+  fs.mkdirSync(path.join(dir, 'config'), {recursive: true});
+  fs.copyFileSync(path.join(ROOT, 'tools/lib/titles.cjs'), path.join(dir, 'tools/lib/titles.cjs'));
+  const cache = path.join(dir, 'config/titles.nacp.json');
+  const script = `
+    const fs = require('node:fs');
+    const t = require(${JSON.stringify(path.join(dir, 'tools/lib/titles.cjs'))});
+    const first = t.rememberDeviceNames({'01001234567890ad': 'Yoshi'});
+    const again = t.rememberDeviceNames({'01001234567890AD': 'Yoshi'});
+    const changed = t.rememberDeviceNames({'01001234567890ad': 'Yoshi 2'});
+    console.log(JSON.stringify({first, again, changed, name: t.name('01001234567890ad'),
+      file: fs.readFileSync(${JSON.stringify(cache)}, 'utf8')}));
+  `;
+  const result = spawnSync(process.execPath, ['-e', script], {encoding: 'utf8'});
+  assert.strictEqual(result.status, 0, result.stderr);
+  const out = JSON.parse(result.stdout);
+  assert.strictEqual(out.first, true);
+  assert.strictEqual(out.again, false);
+  assert.strictEqual(out.changed, true);
+  assert.strictEqual(out.name, 'Yoshi 2');
+  // The cache is plain id -> name, the shape the next process reads back.
+  assert.deepStrictEqual(JSON.parse(out.file), {'01001234567890ad': 'Yoshi 2'});
+});
+
 test('an unknown id is reported with a paste-ready stub', () => {
   const id = '01000000000000dd';
   const r = probe([id], {'titledb-cache.json': {}});
