@@ -43,6 +43,7 @@ function probe(ids, config, {offline = false} = {}) {
       const refreshed = await t.refresh();
       const out = {refreshed, available: t.available(), names: {}};
       for (const id of ${JSON.stringify(ids)}) out.names[id] = t.name(id);
+      out.slug = t.slug(${JSON.stringify(ids[0])});
       out.unnamed = t.unnamed(${JSON.stringify(ids)});
       out.stub = JSON.parse(t.namesStub(${JSON.stringify(ids)}));
       console.log(JSON.stringify(out));
@@ -122,6 +123,13 @@ test('a console name is written once and only when it changes', () => {
   assert.strictEqual(out.name, 'Yoshi 2');
   // The cache is plain id -> name, the shape the next process reads back.
   assert.deepStrictEqual(JSON.parse(out.file), {'01001234567890ad': 'Yoshi 2'});
+});
+
+test('a name that is not latinate enough falls back to the id for its folder', () => {
+  const id = '0100c9100b06a000';
+  const r = probe([id], {'titles.nacp.json': {[id]: '\u30d7\u30c1\u30b3\u30f34'}});
+  assert.strictEqual(r.names[id], '\u30d7\u30c1\u30b3\u30f34');
+  assert.strictEqual(r.slug, id);
 });
 
 test('an unknown id is reported with a paste-ready stub', () => {

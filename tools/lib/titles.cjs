@@ -167,7 +167,10 @@ function slug(id) {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64);
-  return clean || String(id).toLowerCase();
+  // A name that is mostly non-latin script (プチコン4 -> "4") makes a useless
+  // folder, so those keep the id: the save still has a stable, findable home.
+  if (!clean || clean.replace(/[^A-Za-z0-9]/g, '').length < 3) return String(id).toLowerCase();
+  return clean;
 }
 
 module.exports = {refresh, name, label, slug, available, unnamed, namesStub, deviceNames,

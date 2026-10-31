@@ -1,11 +1,16 @@
 'use strict';
-// Ask the console for each title's own name.
+// Ask the console for each title's own name, through ns.
 //
-// The console's control-data reader is the only source that names a Switch 2
-// title: blawar/titledb is a Switch 1 catalogue. It is reached through ns:ro (or
-// ns:am2 on a build without it), which exposes a reader in command 7989; command
-// 0 on that reader fills 0x4000 bytes of NACP for one title id. Found and proven
-// in ouncecake (engine/content.cjs) - the commands below are that flow.
+// blawar/titledb is a Switch 1 catalogue, so a Switch 2 title can only be named
+// by the console itself. ouncecake reads that through ns:ro (or ns:am2), which
+// exposes a reader in command 7989; command 0 on that reader fills 0x4000 bytes
+// of NACP for one title id.
+//
+// On the console this was measured on, ns is not usable from an application's SM:
+// ns:ro was not even registered (0x615), and ns:am2's reader answered 0x5010 and
+// then refused the send (0xf601). list-apps therefore reads the control NCA first
+// (content-names.cjs, the path ouncecake falls back to) and only asks here for the
+// titles that leaves unnamed, which is why this file keeps both buffer encodings.
 //
 // Two buffer encodings are tried, because which one a call wants is a property of
 // the interface and only the console can say: the recv static ("pointer buffer",
@@ -22,6 +27,44 @@ const OPEN_READER = 7989;
 const READ_CONTROL = 0;
 const NACP_SIZE = 0x4000;
 const BUFFER = 0x10000;        // low half of the session's owned memory, unused
+
+// An application's own SM refuses some services (ns:ro, ns:am2) - a smoke test
+// here opened acc:u0 and fsp-srv but not those. The exploit's borrowed initialized
+// SM client answers for them, so this is ouncecake's fallback (engine/session.cjs
+// openServiceWithFallback): a hand-built GetService request on that SM handle.
+const OPEN_SERVICE = 0x11;
+const GET_SERVICE = 2;
+
+async function rawService(s, sm, name) {
+  const packet = Buffer.alloc(256);
+  packet.writeUInt32LE(OPEN_SERVICE, 0);
+  packet.writeUInt32LE(GET_SERVICE, 4);
+  packet.write(name, 8);
+  await s.write(s.base, packet);
+  const transport = await s.call('send', s.base, 4096, sm);
+  if (transport) throw Error('SM send refused: 0x' + transport.toString(16));
+  const reply = await s.readOwned(s.base, 256);
+  let at = 8, count = 0, handle = 0;
+  if (reply.readUInt32LE(4) >>> 31) {
+    const special = reply.readUInt32LE(at); at += 4;
+    count = (special >>> 5) & 15;
+    if (count) { handle = reply.readUInt32LE(at); at += 4; s.handles.add(handle); }
+  }
+  const result = reply.readUInt32LE(at);
+  if (result || count !== 1 || !handle)
+    throw Error('service unavailable: ' + name + ' (0x' +
+      (result & 0x3fffff).toString(16) + ')');
+  return handle;
+}
+
+async function openService(s, name, sm) {
+  try {
+    return await s.openService(name);
+  } catch (error) {
+    if (sm === undefined) throw error;
+    return rawService(s, sm, name);
+  }
+}
 
 const SHAPES = [
   {label: 'pointer', options: address => ({pointers: {receive: [{address, size: NACP_SIZE}]}})},
@@ -45,11 +88,11 @@ async function read(s, ids, options = {}) {
   let ns = null;
   for (const service of ['ns:ro', 'ns:am2']) {
     try {
-      ns = await s.openService(service);
+      ns = await openService(s, service, options.sm);
       note('names: ' + service);
       break;
-    } catch {
-      note('names: ' + service + ' unavailable');
+    } catch (error) {
+      note('names: ' + service + ' unavailable (' + error.message + ')');
     }
   }
   if (ns === null) return names;
@@ -100,4 +143,5 @@ async function read(s, ids, options = {}) {
   return names;
 }
 
-module.exports = {read, SHAPES, OPEN_READER, READ_CONTROL, NACP_SIZE, BUFFER};
+module.exports = {read, rawService, openService, SHAPES, OPEN_READER, OPEN_SERVICE,
+  READ_CONTROL, NACP_SIZE, BUFFER};

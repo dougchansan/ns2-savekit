@@ -75,8 +75,10 @@ previous one open (`--keep-open`, a diagnostic only).
 
 titles are listed from every storage ncm has a database for (internal, sd card,
 game card), and named from the console's own control data, not from a catalogue:
-that is the only way a switch 2 title gets a name, and the names are cached in
-`config/titles.nacp.json`. `--no-names` skips the read.
+that is the only way a switch 2 title gets a name. the name comes out of the
+title's control NCA (the read ouncecake falls back to; its ns reader did not answer
+on this console), so a japanese title can carry its japanese name. names are cached
+in `config/titles.nacp.json`; `--no-names` skips the read.
 
 ## any title, by hand
 
@@ -135,8 +137,9 @@ node tests/test_save_attr.cjs        # save attribute packing (9)
 node tests/test_save_tree.cjs        # save walk: types, failures, limit (6)
 node tests/test_app_storages.cjs     # app list: storages, dedupe (8)
 node tests/test_nacp.cjs             # console name block, plain and deflated (9)
-node tests/test_console_names.cjs    # name read: services, buffers (11)
-node tests/test_titles.cjs           # name layers and the console cache (8)
+node tests/test_console_names.cjs    # ns name read: services, buffers (11)
+node tests/test_content_names.cjs    # control-NCA name read (7)
+node tests/test_titles.cjs           # name layers and the console cache (9)
 node tests/test_restore_manifest.cjs # generic restore path (6)
 node tests/test_nso_verify.cjs       # NSO0 parsing, LZ4, hashes (13)
 node tests/test_smb_meta.cjs         # META name block surgery (5)
