@@ -127,8 +127,15 @@ function rememberDeviceNames(names) {
   }
 }
 
+// True when the console has already named this id. Callers hold ids with and
+// without the 0x prefix, so one spelling is used for the lookup.
+function hasDeviceName(id) {
+  return Boolean(deviceNames()[String(id).toLowerCase().replace(/^0x/, '')]);
+}
+
 function name(id) {
-  const key = String(id).toLowerCase();
+  // ids arrive both ways (0x0100..., 0100...); one spelling for every layer.
+  const key = String(id).toLowerCase().replace(/^0x/, '');
   // Local names win (a curated name beats a machine one); the console names what
   // titledb cannot (Switch 2); titledb names the rest.
   return localNames()[key] || deviceNames()[key] || load()[key] || null;
@@ -174,4 +181,4 @@ function slug(id) {
 }
 
 module.exports = {refresh, name, label, slug, available, unnamed, namesStub, deviceNames,
-  rememberDeviceNames, cachePath: CACHE, deviceCachePath: DEVICE_CACHE};
+  hasDeviceName, rememberDeviceNames, cachePath: CACHE, deviceCachePath: DEVICE_CACHE};

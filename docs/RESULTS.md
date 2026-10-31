@@ -836,3 +836,14 @@ What this does **not** establish: a save holding a file whose read-only open is
 refused (the case the walk now reports and exits 5 on) was not available here, and
 the SD-card database path had no card to open. Breath of the Wild was not on this
 console.
+
+### A physical game's save pulls the same way
+
+Mario Kart 8 Deluxe is the cartridge in the slot, so its title is in the gamecard
+database (storage 2) only - the listing a BuiltInUser-only tool never saw. Its
+save is an ordinary internal Account save: one file, `/userdata.dat`, 80,736 bytes,
+pulled and matched by hash. The gamecard database is where the *title* comes from;
+the save data itself stays on the console.
+
+`inventory` on this session listed 8 archives for the first account, Mario Kart 8
+Deluxe among them, and titled every row.
