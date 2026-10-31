@@ -11,7 +11,7 @@
 // Enumeration uses ns: (the installed-application list) because fs:srv's
 // save-data info reader is refused in this context: commands 60, 61 and 68 all
 // answer 0x320002 on every save-data space, while 62 (cache storage) works. See
-// tools/probe-info-reader.cjs for that evidence.
+// ns2-console's tools/probe-info-reader.cjs for that evidence.
 //
 // Saving one archive per boot is deliberate: opening a save filesystem is the
 // operation that crashes the host often enough that a single boot is the safe
@@ -142,7 +142,7 @@ async function main() {
     : `restart the console, then run again for the next of ${left} remaining`);
   if (wantCache) {
     console.log('--cache: cache storage is enumerable (fs:srv cmd 62) but not yet pullable;');
-    console.log('   run tools/probe-info-reader.cjs to see the one archive it reports.');
+    console.log('   run ns2-console's tools/probe-info-reader.cjs to see the one archive it reports.');
   }
 }
 

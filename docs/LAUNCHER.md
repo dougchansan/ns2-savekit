@@ -49,7 +49,7 @@ Two of these links are *not* what a first reading suggests, and both are settled
 | `main` on SD: missing message | **built, unproven on console** | `payloads/ns2jb-launcher.lua` prints `missing main on sd card`; tested against a stub engine (13/13) |
 | `main` execution with FS privileges | **not implemented** | nothing measured gives the Lua sandbox a native loader; the payload says so on screen instead of claiming it |
 | Project name/artwork write | **built, unproven on console** | `tools/smb-meta.cjs` (7/7) and `payloads/ns2jb-metadata.lua` (15/15) change only the 32-byte name block on the real sample |
-| Artwork chooser | **data path built, UI partial** | `tools/artwork-build.cjs` + `payloads/ns2jb-artwork.lua` (8/8); selection is a file, not a drawn grid, because only `dialog`/`jump` tags are proven |
+| Artwork chooser | **data path built, UI partial** | [ns2-assets](https://github.com/dougchansan/ns2-assets) (`artwork-build.cjs` + `ns2jb-artwork.lua`, 8/8); selection is a file, not a drawn grid, because only `dialog`/`jump` tags are proven |
 | Wipe + inject, hash-verified | **built, unproven on console** | `tools/inject-launcher.sh` (backup -> build -> one write -> pull and verify), `--dry-run` exercised |
 
 ## The measured limits that shape the design
@@ -93,7 +93,7 @@ Two of these links are *not* what a first reading suggests, and both are settled
 
 ## The order the next session should run in
 
-1. `node tools/harness.cjs full --after 'node tools/save-pull-root.cjs "$RUN" 010042d022aea000 … --space 1 --type 1'`
+1. `node ~/ns2-console/tools/harness.cjs full --after 'node tools/save-pull-root.cjs "$RUN" 010042d022aea000 … --space 1 --type 1'`
    - the backup is the first save operation, because everything else can be redone
    from it.
 2. `tools/inject-launcher.sh <run>` - build, write, pull and verify.

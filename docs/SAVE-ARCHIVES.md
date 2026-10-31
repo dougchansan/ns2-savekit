@@ -21,7 +21,7 @@
 There is no wildcard: this call cannot mount "the save data partition" or every
 title's save. Enumerating archives is `OpenSaveDataInfoReader` (60/61/68), which
 answers `0x320002` through the promoted root on this build (see
-`probe-info-reader.cjs`), so the tool probes attributes instead.
+`ns2-console`'s `probe-info-reader.cjs`), so the tool probes attributes instead.
 
 ## What each SaveDataType needs
 
