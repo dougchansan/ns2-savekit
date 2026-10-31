@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // List installed applications through the borrowed FS SM client + NCM.
 //   node list-apps.cjs <run-directory>
-// Read-only: NCM content-meta database enumeration of BuiltInUser applications.
+// Read-only: NCM content-meta database enumeration. Every storage that has a
+// database is asked - BuiltInUser, SdCard, GameCard - because installed titles do
+// not all live on the internal NAND (issue #1: only 18 titles, all internal).
 const path = require('node:path');
+const {collect} = require('./lib/app-storages.cjs');
 
 async function main() {
   const [runDirectory] = process.argv.slice(2);
@@ -19,10 +22,16 @@ async function main() {
     throw Error('ncm lookup failed: transport=' + ncm.transport + ' result=' + ncm.result);
   const handle = ncm.moves[0];
   try {
-    const listed = await memory.request({command: 'root-native-ncm-list-system',
-      handle, storage: 4, metaType: 0x80, installType: 0});
-    console.error(`${listed.total} installed applications (BuiltInUser)`);
-    for (const key of listed.keys) console.log(key.id);
+    const {ids} = await collect(storage => memory.request({
+      command: 'root-native-ncm-list-system', handle, storage, metaType: 0x80, installType: 0,
+    }), {note: text => console.error(text)});
+    // No database at all is a tool problem, not an empty console: "no titles"
+    // would otherwise send the caller looking for a missing SD card.
+    if (ids.length === 0)
+      throw Error('NCM listed no installed applications on any storage ' +
+        '(BuiltInUser, SdCard, GameCard)');
+    for (const id of ids) console.log(id);
+    console.error(`${ids.length} installed applications`);
   } finally {
     await memory.request({command: 'root-native-close-handle', handle}).catch(() => {});
   }

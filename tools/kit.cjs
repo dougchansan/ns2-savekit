@@ -183,8 +183,9 @@ async function titleRows(session) {
   if (unnamed.length && !namesNoted) {
     namesNoted = true;
     console.log(`\nnote: ${unnamed.length} of ${ids.length} titles ` +
-      `${unnamed.length === 1 ? 'has' : 'have'} no name - demos/trials and some`);
-    console.log('new releases are not in titledb.');
+      `${unnamed.length === 1 ? 'has' : 'have'} no name. titledb is a Switch 1`);
+    console.log('catalogue, so it cannot name a Switch 2 title; demos/trials and some new');
+    console.log('releases are missing from it too.');
     if (!refreshed) console.log('(titledb could not be fetched - connect once with network access for names)');
     console.log('add them to config/titles.local.json (keep any existing entries):');
     console.log('  ' + titles.namesStub(unnamed));

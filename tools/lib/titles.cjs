@@ -4,9 +4,11 @@
 // One US.en.json download fills config/titledb-cache.json (~1.4 MB for 29k
 // names); the cache is then reused offline for a week. Upstream has no smaller
 // name file - this is a 90 MB JSON document (~26 MB over the wire) - so the
-// first run needs network access for full coverage. Titles titledb cannot name
-// (demos/trials, some new releases) fall back to config/titles.local.json;
-// anything still unknown is shown as an id and kit/inventory print a stub.
+// first run needs network access for full coverage. blawar/titledb is a Switch 1
+// catalogue, so a Switch 2 title id is never in it. Titles titledb cannot name
+// (Switch 2, demos/trials, some new releases) fall back to config/titles.json and
+// config/titles.local.json; anything still unknown is shown as an id and
+// kit/inventory print a stub.
 const fs = require('node:fs');
 const path = require('node:path');
 
