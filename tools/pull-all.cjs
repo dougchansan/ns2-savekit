@@ -142,7 +142,7 @@ async function main() {
     : `restart the console, then run again for the next of ${left} remaining`);
   if (wantCache) {
     console.log('--cache: cache storage is enumerable (fs:srv cmd 62) but not yet pullable;');
-    console.log('   run ns2-console's tools/probe-info-reader.cjs to see the one archive it reports.');
+    console.log("   run ns2-console's tools/probe-info-reader.cjs to see the one archive it reports.");
   }
 }
 
