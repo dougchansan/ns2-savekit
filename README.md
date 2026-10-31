@@ -5,8 +5,8 @@ over a live [ns2jb](https://gitlab.com/kurumuz/ns2jb) session. the save path is
 not game-specific: it opens a title's save archive, moves files in or out,
 commits, and verifies by hash.
 
-the same access is then used for one more thing: an Artemis save be retargeted
-so the game resumes *our* Lua instead of its own script. that is the "save
+the same access is then used for one more thing: an Artemis save can be
+retargeted so the game resumes *our* Lua instead of its own script. that is the "save
 launch" half (`payloads/`, `tools/artemis-save.py`); the save half works on any
 title you own.
 
@@ -15,11 +15,9 @@ content.
 
 ## what you need
 
-- a **patched** `ns2jb` checkout, an exploit session held open, and the run
-  folder it prints (`runs/switch2-XXXXXX`, containing
-  `switch2/ro/root/current-root.json`). the host is
-  [ns2jb-rpc](https://github.com/dougchansan/ns2jb-rpc) or `run.cjs` from the
-  ns2jb checkout.
+- a **patched** `ns2jb` checkout (the local `~/ns2jb-rpc` checkout, or `run.cjs`
+  from ns2jb), an exploit session held open, and the run folder it prints
+  (`runs/switch2-XXXXXX`, containing `switch2/ro/root/current-root.json`).
 - firmware 23.0.1 and SmileBASIC 4 (retail) to deliver the exploit.
 - node (no npm install; nothing to build).
 
