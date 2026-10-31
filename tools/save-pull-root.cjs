@@ -22,6 +22,7 @@ const path = require('node:path');
 const net = require('node:net');
 const crypto = require('node:crypto');
 const {build, openCommand, plan} = require('./lib/save-attr.cjs');
+const tree = require('./lib/save-tree.cjs');
 
 function request(socketPath, command) {
   return new Promise((resolve, reject) => {
@@ -108,6 +109,16 @@ async function main() {
   const s = new Session('save-pull-root-' + Date.now(), 0x80000);
   s.record = async () => {};
   await s.initialize();
+
+  // The engine's filesystem calls, as the walk in lib/save-tree.cjs wants them:
+  // the listing gives names and types, the open gives a file to read.
+  const fsapi = {
+    list: (save, directory, limit) => filesystem.listDirectory(s, save, directory, limit),
+    open: (save, full) => filesystem.openFile(s, save, full),
+    size: opened => filesystem.fileSize(s, opened.handle),
+    read: (opened, offset, size) => filesystem.readFile(s, opened.handle, offset, size),
+    close: opened => s.close(opened.handle).catch(() => s.handles.delete(opened.handle)),
+  };
 
   // Raw 16-byte AccountUid values. Do not round-trip them through BigInt hex:
   // an AccountUid is two little-endian u64s, so the numeric hex is byte-swapped.
@@ -202,22 +213,38 @@ async function main() {
       return;
     }
 
-    async function show(save, directory, state) {
-      const entries = await filesystem.listDirectory(s, save, directory, 2048);
-      for (const entry of entries) {
-        const full = (directory.endsWith('/') ? directory : directory + '/') + entry.name;
-        const opened = await filesystem.openFile(s, save, full);
-        if (!opened.result) {
-          const size = Number(await filesystem.fileSize(s, opened.handle));
-          await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
+    // A type that is neither Directory nor File has never been seen on this
+    // console; say so instead of guessing silently. It is walked as a file.
+    function noteType(full, entry) {
+      if (tree.isFile(entry)) return;
+      console.error(`  ${full}: directory-entry type ${entry.type} is neither Directory ` +
+        `(${tree.DIRECTORY}) nor File (${tree.FILE}); treating it as a file`);
+    }
+
+    // What `--list-only` reports. The size comes from the open handle (the same
+    // value a pull would read), falling back to the listing's size when a file
+    // refuses to open - and that refusal is printed, never swallowed.
+    async function show(save, state) {
+      await tree.walk(save, '/', fsapi, {
+        directory: async full => { console.log(`${'<dir>'.padStart(9)}  ${full}/`); },
+        file: async (full, entry) => {
+          noteType(full, entry);
+          const opened = await fsapi.open(save, full);
+          let size = Number(entry.size);
+          if (opened.result) {
+            state.unreadable.push({path: full, result: code(opened.result)});
+            console.error(`  ${full} (open failed: ${code(opened.result)}; ` +
+              'size is the listing\'s)');
+          } else {
+            try { size = Number(await fsapi.size(opened)); }
+            catch (error) { console.error(`  ${full} (size failed: ${error.message})`); }
+            await fsapi.close(opened);
+          }
           console.log(`${String(size).padStart(9)}  ${full}`);
           if (state.stampTargets.length < 8) state.stampTargets.push(full);
           state.count += 1; state.total += size;
-        } else {
-          console.log(`${'<dir>'.padStart(9)}  ${full}/`);
-          await show(save, full, state);
-        }
-      }
+        },
+      });
     }
 
     async function newestStamp(save, targets) {
@@ -249,15 +276,26 @@ async function main() {
       return newest;
     }
 
-    async function walk(save, directory, disk, state) {
-      const entries = await filesystem.listDirectory(s, save, directory, 2048);
+    // The pull itself. Same traversal as show(), so a listing and a pull cannot
+    // disagree about what the archive holds; the difference is only that this one
+    // reads every file it finds.
+    async function pull(save, disk, state) {
       await fs.mkdir(disk, {recursive: true});
-      for (const entry of entries) {
-        const full = (directory.endsWith('/') ? directory : directory + '/') + entry.name;
-        const target = path.join(disk, entry.name);
-        const opened = await filesystem.openFile(s, save, full);
-        if (!opened.result) {
-          const size = Number(await filesystem.fileSize(s, opened.handle));
+      await tree.walk(save, '/', fsapi, {
+        directory: async full => { await fs.mkdir(path.join(disk, full), {recursive: true}); },
+        file: async (full, entry) => {
+          noteType(full, entry);
+          const opened = await fsapi.open(save, full);
+          if (opened.result) {
+            // A file that will not open is a hole in the pull, and the whole point
+            // of this walk is that holes are visible: record it, keep going, and
+            // let the caller exit non-zero. The old walk called it a directory.
+            state.failed.push({path: full, size: Number(entry.size), result: code(opened.result)});
+            console.error(`  ${full} (open failed: ${code(opened.result)}) - not pulled`);
+            return;
+          }
+          const size = Number(await fsapi.size(opened));
+          const target = path.join(disk, full);
           const file = await fs.open(target, 'w');
           // Hash while copying: the console already proves each chunk against a hash it
           // computed, and this local digest makes the pulled archive verifiable later
@@ -266,47 +304,65 @@ async function main() {
           let offset = 0;
           while (offset < size) {
             const chunk = Math.min(0x40000, size - offset);
-            const data = await filesystem.readFile(s, opened.handle, offset, chunk);
+            const data = await fsapi.read(opened, offset, chunk);
             if (!data.length) throw Error('Short read at ' + full + ' +' + offset);
             await file.write(data);
             hash.update(data);
             offset += data.length;
           }
           await file.close();
-          await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
+          await fsapi.close(opened);
           state.files += 1; state.bytes += size;
-          (state.entries ||= []).push({path: full, size, sha256: hash.digest('hex')});
+          state.entries.push({path: full, size, sha256: hash.digest('hex')});
           console.error(`  ${full} (${size} bytes)`);
-        } else {
-          await walk(save, full, target, state);
-        }
-      }
+        },
+      });
     }
 
+    // Files that refused to open, across every archive of this run. A pull that
+    // lost files must not exit 0: that is what made a partial save look complete.
+    let incomplete = 0;
     for (const archive of archives) {
       openHandle = archive.handle;
       console.error(`mounted ${archiveText(archive)}`);
       if (listOnly) {
         if (all) console.log(`archive ${archiveText(archive)}`);
-        const state = {count: 0, total: 0, stampTargets: []};
-        await show(openHandle, '/', state);
+        const state = {count: 0, total: 0, stampTargets: [], unreadable: []};
+        await show(openHandle, state);
         const newest = await newestStamp(openHandle, state.stampTargets);
         console.log(`listed ${state.count} files, ${state.total} bytes` +
           (newest ? `, newest ${Math.floor(newest / 1000000000)}` : '') +
           ' (read-only, nothing written)');
+        if (state.unreadable.length) {
+          console.error(`warning: ${state.unreadable.length} file(s) above did not open. ` +
+            'A pull would report them as failed rather than skip them;');
+          console.error('the count and size include them.');
+        }
       } else {
         const target = all ? path.join(outputDirectory, archiveDir(archive)) : outputDirectory;
-        const state = {files: 0, bytes: 0, entries: []};
-        await walk(openHandle, '/', target, state);
+        const state = {files: 0, bytes: 0, entries: [], failed: []};
+        await pull(openHandle, target, state);
+        incomplete += state.failed.length;
         await fs.writeFile(path.join(target, 'manifest.json'),
           JSON.stringify({archive: archiveText(archive), files: state.files,
-            bytes: state.bytes, entries: state.entries}, null, 2) + '\n');
-        console.error(`done: ${state.files} files, ${state.bytes} bytes -> ${target}`);
+            bytes: state.bytes, partial: state.failed.length > 0,
+            failed: state.failed, entries: state.entries}, null, 2) + '\n');
+        if (state.failed.length)
+          console.error(`INCOMPLETE: ${state.failed.length} file(s) did not open -> ${target}`);
+        else
+          console.error(`done: ${state.files} files, ${state.bytes} bytes -> ${target}`);
       }
       if (!keepOpen) {
         await s.close(openHandle).catch(() => s.handles.delete(openHandle));
         openHandle = null;
       }
+    }
+    if (incomplete) {
+      console.error('');
+      console.error(`INCOMPLETE PULL - ${incomplete} file(s) in this save could not be opened.`);
+      console.error('They are listed as "failed" in the manifest next to the files that did');
+      console.error('pull. The console was only read; nothing was written. Re-run to retry.');
+      process.exitCode = 5;
     }
   } finally {
     if (keepOpen) {

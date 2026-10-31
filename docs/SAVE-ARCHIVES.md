@@ -96,6 +96,25 @@ and `saves/all/SmileBASIC-4-demo/f/###/` are two levels deep).
 
 What differs between games is **which archives** the attribute selects, above.
 
+## What the walk calls a file
+
+The console's directory listing reports each entry's type, and this build reports
+`Directory = 0` and `File = 1` (a file's type byte is 1 - see the `tmp.dat` reset
+in `RESULTS.md`). The walk in `lib/save-tree.cjs` recurses on `Directory` and
+reads on `File`, so a listing (`--list-only`) and a pull traverse identically.
+
+It used to try a read-only open on every entry and call a failed open a
+directory. A real file that refused that open was recursed into, found empty
+there, and dropped without a word - the "not catching all the file structure"
+report. A file that will not open is now named on stderr, recorded as `failed` in
+the manifest, and makes the pull exit 5, so a partial save cannot pass for a
+complete one. The pull is read-only throughout: a failed file costs a retry, not
+data.
+
+One directory may hold up to 65536 entries. `ReadDirectory` returns four per
+call, so that number is only a loop bound, but the old 2048 aborted the whole pull
+of a save that went past it.
+
 ## Known limits
 
 - Without the info reader there is no way to learn an unknown `Index`. `--index`

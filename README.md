@@ -73,6 +73,13 @@ several save operations per boot usually work; restart the console only if one
 actually fails. the one thing that reliably breaks the next session is leaving a
 previous one open (`--keep-open`, a diagnostic only).
 
+titles are listed from every storage ncm has a database for (internal, sd card,
+game card), and named from the console's own control data, not from a catalogue:
+that is the only way a switch 2 title gets a name. the name comes out of the
+title's control NCA (the read ouncecake falls back to; its ns reader did not answer
+on this console), so a japanese title can carry its japanese name. names are cached
+in `config/titles.nacp.json`; `--no-names` skips the read.
+
 ## any title, by hand
 
 ```sh
@@ -109,14 +116,15 @@ game look for `save9999.dat` at boot.
 | --- | --- | --- |
 | `0x7d402` for every account | the game has not made a save yet | launch it and close it fully (Home -> X -> Close), then retry |
 | `could not tell whether … has save data` / `exited without listing anything` | the read-only probe never listed an archive; an older puller called that "no save" (issue #2) | update the tools; the kit now names this instead of calling the save absent |
-| `Directory exceeds the N-entry probe limit` | your copy predates the 2048-entry limit | raise it in `tools/save-pull-root.cjs` and `tools/save-write-stage.cjs` |
+| `Directory exceeds the N-entry probe limit` | your copy predates the raised limit; the old pull gave up at 2048 entries in one directory | use the current tools (65536 in `tools/lib/save-tree.cjs`); no real save is that busy |
+| `INCOMPLETE PULL` (exit 5) | a file in the save refused a read-only open, so it was not pulled | the file is named above and listed as `failed` in `manifest.json`; re-run to retry - the pull is read-only |
 | `could not list installed applications` / `could not list accounts` | one of `inventory.cjs`'s two enumerations failed; the lines under it are the child's own error and a hint | follow the hint; an account failure can be worked around with `node tools/inventory.cjs <run> <uid>` |
 | `EEXIST …-ncm-system-programs.bin` | the engine checkout is unpatched | `sh patches/apply.sh ~/ns2jb`, then start a new run - an existing run folder keeps the old engine copy |
 | `ListAllUsers: transport 0xf601` | the engine has no CMIF pointer descriptors; not a console fault | apply the patches and start a new run |
 | `SESSION LOST` / `transport 0xf601` during a pull or write | the console stopped answering | restart the console, reopen SmileBASIC, start a new session |
 | `NO LIVE HOST` / `memory.sock` | the session folder is stale or gone | start the host again and use the run folder it prints |
 | title listed without `✔` | it is not on your write allowlist | add its id to `config/titles.local.json` |
-| names are missing, ids only | titledb has not been fetched yet, or does not list the title | run once with network; paste the stub the tools print into `config/titles.local.json` |
+| names are missing, ids only | the console gave no name for that id (no control data, or the read was refused) and titledb is a Switch 1 catalogue, so it cannot name a Switch 2 title | paste the stub the tools print into `config/titles.local.json`; console names that were read are cached in `config/titles.nacp.json` |
 
 ## tests
 
@@ -126,7 +134,12 @@ offline, no console, no network:
 node tests/test_kit_probe.cjs        # kit save detection (5)
 node tests/test_inventory.cjs        # inventory reporting (7)
 node tests/test_save_attr.cjs        # save attribute packing (9)
-node tests/test_titles.cjs           # name fallbacks (5)
+node tests/test_save_tree.cjs        # save walk: types, failures, limit (6)
+node tests/test_app_storages.cjs     # app list: storages, dedupe (8)
+node tests/test_nacp.cjs             # console name block, plain and deflated (9)
+node tests/test_console_names.cjs    # ns name read: services, buffers (11)
+node tests/test_content_names.cjs    # control-NCA name read (7)
+node tests/test_titles.cjs           # name layers and the console cache (9)
 node tests/test_restore_manifest.cjs # generic restore path (6)
 node tests/test_nso_verify.cjs       # NSO0 parsing, LZ4, hashes (13)
 node tests/test_smb_meta.cjs         # META name block surgery (5)

@@ -14,7 +14,7 @@ folder.
 | Engine module | Patch | What breaks without it |
 | --- | --- | --- |
 | `engine/shared/ipc.cjs` | CMIF pointer/static descriptors (`0001`) | `ListAllUsers` fails with `transport 0xf601`, so `save-pull-root.cjs --list-uids`, `accounts.cjs`, the account lookup in `kit.cjs` and `inventory.cjs` cannot enumerate accounts. Creating a file in a save also fails with `0x2ee002` |
-| `engine/switch2/ro/ncm.cjs` | storage/metaType selection, one capture file per query (`rest-engine-switch2-ro-ncm`) | the `storage: 4, metaType: 0x80` that `list-apps.cjs` sends is ignored, so it lists BuiltInSystem system programs instead of installed applications; a second run in the same folder fails with `EEXIST …-ncm-system-programs.bin` |
+| `engine/switch2/ro/ncm.cjs` | storage/metaType selection, one capture file per query (`rest-engine-switch2-ro-ncm`) | the `storage: 4/5/2, metaType: 0x80` that `list-apps.cjs` sends is ignored, so it lists BuiltInSystem system programs instead of installed applications; a second run in the same folder fails with `EEXIST …-ncm-system-programs.bin` |
 | `engine/switch2/app/mounted-save.cjs` | `inspectMountedFilesystem()` export (`0002`) | `find-save-uid.cjs` cannot scan for the uid; `kit.cjs` falls back to asking for it |
 | `engine/switch2/memory/probe-reserved-gap.cjs` | extra pin retries / window sizing | acquisition is less reliable on our unit |
 | `engine/switch2/retained/find-metadata.cjs` | 24 move attempts | acquisition is less reliable |
@@ -66,7 +66,7 @@ After patching, start `run.cjs` fresh and use the run folder it prints. Check th
 result before touching a save:
 
 ```sh
-node tools/list-apps.cjs <run>   # "N installed applications (BuiltInUser)"
+node tools/list-apps.cjs <run>   # one line per storage, then "N installed applications"
 node tools/accounts.cjs  <run>   # ListAllUsers 0x0, then the uids
 ```
 

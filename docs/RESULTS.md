@@ -801,3 +801,38 @@ that the Seedsow injection has used repeatedly, but "differs" itself is untested
 
 Yield note: 1 success in 5 boots tonight, and the successful one took 4 minutes of
 acquisition after three late-stage failures on other boots.
+
+## 2026-10-31 10:13: the enumeration fixes on hardware (run `switch2-wbYQOT`)
+
+One boot, one session, three claims checked against the console itself.
+
+### Applications come from every storage that has a database
+
+`list-apps` asked BuiltInUser, SdCard and GameCard: 9 internal plus 1 gamecard
+(Mario Kart 8 Deluxe, `0100152000022000`) = 10, with SdCard reported as "no
+database" because the slot is empty. The old tool asked BuiltInUser alone and
+would have listed 9 - the shape of issue #1, one storage short of the answer.
+
+### Names come off the console
+
+10 of 10 titles named from each title's control NCA - ouncecake's fallback path.
+The ns reader did not answer on this build: `ns:ro` was not registered (0x615) and
+`ns:am2`'s reader answered `0x5010`, then refused the send (`0xf601`). The names
+are the NACP's own: five are japanese titles and carry the japanese name
+(`プチコン4`, `ノラと皇女と野良猫ハート2体験版`, ...), which is the shell's name
+for them, not an english catalogue's. Reading the control NCA first also matters
+for order: with the ns attempt first, the gamecard title failed (9 of 10); with
+the NCA read first, all 10 named.
+
+### The save walk is type-based and complete
+
+`--list-only` on the Seedsow demo listed 290 files / 4,665,778 bytes, nested
+`system/` tree included, and a pull of that archive wrote 290 files that
+`verify-save-manifest` matched by hash. Seedsow Lullaby (full) listed 75 files /
+2,048,636 bytes. The walk classifies from the listing's directory-entry type, so
+nothing was opened to decide what it was.
+
+What this does **not** establish: a save holding a file whose read-only open is
+refused (the case the walk now reports and exits 5 on) was not available here, and
+the SD-card database path had no card to open. Breath of the Wild was not on this
+console.
