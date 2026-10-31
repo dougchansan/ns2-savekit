@@ -115,6 +115,19 @@ In the order they mattered:
   but SmileBASIC ignores it completely, HOME included. Fix: open Controllers ›
   Change Grip/Order (from the home menu), `curl '…/pro?l=1&r=1&ms=500'`, then
   `/pro?a=1`. The Joy-Con drops out; the USB pad shows alone with LED 1.
+- **Simpler: boot, don't wake (measured 2026-10-31).** A pad that WAKES the
+  console from sleep comes up as a secondary controller - `/usb` shows
+  `hidReady:false`, most input reports are dropped at the USB layer, menu input
+  feels flaky, and games ignore it. The SAME pad across a COLD BOOT comes up as
+  Player 1: `hidReady` goes true and stays true, and the first press registers.
+  So the flaky-menu-input and the games-ignore-the-pad problems are one bug, and
+  rebooting fixes both without the Change Grip/Order menu dance (which is hard to
+  drive precisely while the input is still being dropped). `tools/pad-player1.cjs`
+  automates it: `status` reports player1 / secondary / off from `/usb`
+  (`hidReady` across samples + whether `reportsSent` is climbing), `ensure`
+  force-reboots via the fingerbot only if the pad is not already Player 1, and
+  `reboot` always does. `hidReady` blips false for a frame even when Player 1, so
+  the tool samples three times and takes the majority.
 - Use the retail **SmileBASIC 4** tile, not the "SmileBASIC 4 Demo Version" tile.
   On launch it shows a language/tag dialog and a tag-retrieval error; A twice,
   then "Make a Program" (A) reaches `OK`.
