@@ -1,7 +1,8 @@
 # ns2-savekit
 
-read, back up, restore and modify save data for **any installed Switch 2 game**
-over a live [ns2jb](https://gitlab.com/kurumuz/ns2jb) session. the save path is
+read, back up, restore and modify save data for **any Switch 2 title**, whether
+it is installed, on a card, or has no card inserted, over a live
+[ns2jb](https://gitlab.com/kurumuz/ns2jb) session. the save path is
 not game-specific: it opens a title's save archive, moves files in or out,
 commits, and verifies by hash.
 
@@ -58,6 +59,8 @@ scripts and prints the exact command before each one.
 | replace | write files from a directory, in one transaction |
 | delete | remove one file at the save root |
 | verify | pull again and compare every file with the backup |
+| all saves (a) | list every archive the console's save index knows, cartridge saves included, no titledb |
+| pull batch (p) | pull the next pending archives from that inventory (default 5) |
 | launcher / editor | Artemis only: install the payload set or the Seedsow Lua Editor save |
 
 writes are fenced:
@@ -80,6 +83,11 @@ title's control NCA (the read ouncecake falls back to; its ns reader did not ans
 on this console), so a japanese title can carry its japanese name. names are cached
 in `config/titles.nacp.json`; `--no-names` skips the read.
 
+ncm's list is the **application** list; the save store is a different index.
+`save-inventory.cjs` asks fs:srv for every save archive directly, so a title
+whose card is out (or whose program was removed) can still have its save listed
+and pulled. that is also why a cartridge save survives without the cartridge.
+
 ## any title, by hand
 
 ```sh
@@ -88,14 +96,23 @@ node tools/save-pull-root.cjs <run> <title-id> saves/botw <uid>
 node tools/pull-all.cjs <run> saves/all --batch 4      # every archive it finds
 node tools/saves-report.cjs saves/all                  # what was pulled
 
+# whole store: list every archive, then pull from the inventory
+node tools/save-inventory.cjs <run> --json saves/inventory.json --names
+node tools/pull-inventory.cjs <run> saves/from-inventory \
+  --inventory saves/inventory.json --space 1 --type 1
+
 # restore a pulled directory (back up -> write -> pull -> verify, in that order)
 sh tools/save-restore.sh <run> <title-id> <uid> saves/botw [--space N --type N]
 ```
 
 `<uid>` is the 16-byte account uid in hex; `--list-uids` prints them. the pull
 prints `mounted space=… type=… uid=…` - read that line, it is how you learn that
-the right archive opened. `docs/RESTORE.md` covers the restore path and its
-limits; `docs/SAVE-ARCHIVES.md` covers which archive an open selects.
+the right archive opened. `save-inventory.cjs` is the no-catalogue path: it lists
+every archive in the save index and writes JSON; `pull-inventory.cjs` pulls exact
+identities from it, five at a time by default (`--limit 0` = all pending), and
+resumes from `inventory-progress.json` after a reboot. `docs/RESTORE.md` covers
+the restore path and its limits; `docs/SAVE-ARCHIVES.md` covers which archive an
+open selects.
 
 ## save launch (the Artemis half)
 
@@ -115,6 +132,8 @@ game look for `save9999.dat` at boot.
 | what you see | what it means | what to do |
 | --- | --- | --- |
 | `0x7d402` for every account | the game has not made a save yet | launch it and close it fully (Home -> X -> Close), then retry |
+| `0xe02` opening a save | the app hosting the exploit holds its own save (SmileBASIC 4) | pull that title from a session hosted by a different app |
+| `0x7d402` for a Cache archive the inventory lists | the archive exists but did not open at rank 0/index 0 | attribute unresolved; leave it for a later probe |
 | `could not tell whether … has save data` / `exited without listing anything` | the read-only probe never listed an archive; an older puller called that "no save" (issue #2) | update the tools; the kit now names this instead of calling the save absent |
 | `Directory exceeds the N-entry probe limit` | your copy predates the raised limit; the old pull gave up at 2048 entries in one directory | use the current tools (65536 in `tools/lib/save-tree.cjs`); no real save is that busy |
 | `INCOMPLETE PULL` (exit 5) | a file in the save refused a read-only open, so it was not pulled | the file is named above and listed as `failed` in `manifest.json`; re-run to retry - the pull is read-only |

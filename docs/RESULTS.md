@@ -836,3 +836,84 @@ What this does **not** establish: a save holding a file whose read-only open is
 refused (the case the walk now reports and exits 5 on) was not available here, and
 the SD-card database path had no card to open. Breath of the Wild was not on this
 console.
+
+## 2026-11-01 11:20: the save-data index works on the promoted root - 17 User saves, no titledb
+
+The kit had recorded that `OpenSaveDataInfoReader` (fs:srv 60/61/68) answered
+`0x320002` and treated whole-store enumeration as unavailable. That was a session
+bug, not a console limit: `probe-info-reader.cjs` and the old `save-list.cjs`
+opened a **fresh** fsp-srv session, whose cached program id is not 1, so FS
+rejected the reader. On the **promoted root handle** the same reader opens with a
+one-byte space input (command 61) and returns `SaveDataInfo` records, 0x60 bytes
+each, with the count inline:
+
+```
+node tools/save-inventory.cjs <run> --space 1 --names
+```
+
+Measured on `runs/switch2-kZvIBD` while the session was live, without a new boot:
+
+| space | archives |
+| --- | --- |
+| 0 System | 111 |
+| 1 User | 17 |
+| 3 Temporary | 0 |
+| 2 SdSystem / 4 SdUser | `0x137e02` (no SD card) |
+
+The User list is the result that matters. It includes `0100152000022000`
+(Mario Kart 8 Deluxe, Account + Device) and `0100abf008968000` (Pokemon Sword,
+Account + Bcat) - **neither card is inserted and neither title is in NCM's
+BuiltInUser list**. It also includes `0100f43008c44000` (Z-A, Account id 52 +
+Bcat id 53) and `010012900d38a000` (Nora, whose program was removed from NCM).
+The store is enumerable from the console alone; NCM's application list was the
+wrong source, not the only source.
+
+The reader is metadata only. Opening an archive is the operation that can wedge a
+session, so enumerate first; the pull path and its batch limits are the next
+entry.
+
+## 2026-11-01 11:47: the inventory pull path works - six opens survived one boot
+
+`pull-inventory.cjs` takes the exact `(space, type, uid, app id)` from the
+inventory JSON, so NCM and titledb are out of the pull path entirely. Tested on
+the same held boot as the inventory:
+
+| # | archive | result |
+| --- | --- | --- |
+| 1 | Z-A Account id 52 | 1 file, 3,186,611 bytes |
+| 2 | Pokemon Sword Account id 34 | 0 files - the index's 8,732,672 is allocation; the save is created-but-unused |
+| 3 | Switch Sports Device id 47 | 1 file, 586,140 bytes, SHA-256 matched the manifest |
+| 4 | SmileBASIC Cache id 51 | `0x7d402` at rank 0/index 0 - attribute unresolved, not absent |
+| 5 | Switch Sports Bcat id 48 | 43 files, 403,373 bytes (index allocation 7,684,096) |
+| 6 | Z-A Account id 52 again | 1 file, 3,186,611 bytes, same SHA-256 |
+
+The session was still `ready: true` (55,058 calls) after the sixth attempt, so the
+one-per-boot rule is a risk measured on other boots, not a hard cap. The tool now
+defaults to a batch of up to five (`--limit 0` = every pending archive) and still
+stops at the first session loss, because a lost 4/4 costs a boot to reacquire.
+
+Two tool bugs surfaced. `save-pull-root` prints its `done:` line on stderr, and
+the puller's first success test only looked at stdout, so a valid 0-file pull was
+recorded as a failure; fixed by testing stdout+stderr and recording `files: 0` as
+done. And a Cache archive is in the index but did not open at rank 0/index 0; it is
+now recorded as a retry, not as absent.
+
+## 2026-11-01 12:30: the rest of the User store - 15/17 archives, two blockers
+
+The default batch was raised to five and two more batches ran on the same boot.
+Total for the User space: **15 of 17 archives, 525 files, 16,445,572 bytes**. The
+session was still `ready: true` (69,718 calls) after roughly 20 open attempts, so
+the old one-per-boot limit is not a hard cap. It remains a risk on other boots,
+so the batch still stops at the first session loss.
+
+The two blockers are host-specific, not discovery failures:
+
+- **SmileBASIC 4 Account id 32 -> `0xe02`.** SmileBASIC is the application hosting
+  the exploit, so it holds its own save. Retry from a different host app.
+- **SmileBASIC 4 Cache id 51 -> `0x7d402` at rank 0/index 0.** The archive is in
+  the index; the open attribute is unresolved (the Cache problem from 11:47).
+
+Empty archives (allocation > 0, zero files) are real: Pokemon Sword Account
+(8.7 MB allocation), MK8DX Device (68.9 MB), Pokemon Sword Bcat (69.9 MB). The
+index `size` is allocation throughout: MK8DX Account said 108.9 MB and pulled
+80,736 bytes; Mario Kart World said 151.1 MB and pulled 864,156 / 1,248,964 bytes.
