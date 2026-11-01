@@ -44,6 +44,7 @@ function probe(ids, config, {offline = false} = {}) {
       const out = {refreshed, available: t.available(), names: {}};
       for (const id of ${JSON.stringify(ids)}) out.names[id] = t.name(id);
       out.slug = t.slug(${JSON.stringify(ids[0])});
+      out.hasDeviceName = t.hasDeviceName(${JSON.stringify(ids[0])});
       out.unnamed = t.unnamed(${JSON.stringify(ids)});
       out.stub = JSON.parse(t.namesStub(${JSON.stringify(ids)}));
       console.log(JSON.stringify(out));
@@ -88,6 +89,13 @@ test('a name read from the console beats titledb and is reused', () => {
   });
   assert.strictEqual(r.names[id], 'Welcome Tour');
   assert.deepStrictEqual(r.unnamed, []);
+});
+
+test('the console cache is found whatever prefix the caller uses', () => {
+  const id = '01001234567890ae';
+  const r = probe(['0x' + id], {'titles.nacp.json': {[id]: 'Welcome Tour'}});
+  assert.strictEqual(r.names['0x' + id], 'Welcome Tour');
+  assert.strictEqual(r.hasDeviceName, true);
 });
 
 test('a curated local name still beats the console name', () => {

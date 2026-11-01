@@ -86,8 +86,7 @@ async function main() {
     if (argv.includes('--no-names')) return;
     // Only ids the console has not already named: the cache makes the second
     // listing (and every other tool) free of the read.
-    const cached = titles.deviceNames();
-    const missing = ids.filter(id => !cached[id.toLowerCase()]);
+    const missing = ids.filter(id => !titles.hasDeviceName(id));
     if (missing.length === 0) return;
     const storageOf = {};
     for (const storage of storages)
