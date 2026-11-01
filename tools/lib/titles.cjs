@@ -4,9 +4,11 @@
 // One US.en.json download fills config/titledb-cache.json (~1.4 MB for 29k
 // names); the cache is then reused offline for a week. Upstream has no smaller
 // name file - this is a 90 MB JSON document (~26 MB over the wire) - so the
-// first run needs network access for full coverage. Titles titledb cannot name
-// (demos/trials, some new releases) fall back to config/titles.local.json;
-// anything still unknown is shown as an id and kit/inventory print a stub.
+// first run needs network access for full coverage. blawar/titledb is a Switch 1
+// catalogue, so a Switch 2 title id is never in it. Titles titledb cannot name
+// (Switch 2, demos/trials, some new releases) fall back to config/titles.json and
+// config/titles.local.json; anything still unknown is shown as an id and
+// kit/inventory print a stub.
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -64,7 +66,8 @@ async function refresh(maxAgeMs = 7 * 24 * 3600 * 1000) {
 function available() {
   const known = Object.keys(load()).length;
   const local = Object.keys(localNames()).length;
-  return known + local > 0;
+  const consoleNames = Object.keys(deviceNames()).length;
+  return known + local + consoleNames > 0;
 }
 
 let overrides = null;
@@ -93,10 +96,42 @@ function localNames() {
   return overrides;
 }
 
+// Names read from the console's own control data (tools/list-apps.cjs), cached
+// because they cost one session read per title and never change. This is the
+// only layer that can name a Switch 2 title, and it is gitignored like uids.json.
+const DEVICE_CACHE = path.join(__dirname, '..', '..', 'config', 'titles.nacp.json');
+let device = null;
+
+function deviceNames() {
+  if (device) return device;
+  device = {};
+  try { device = JSON.parse(fs.readFileSync(DEVICE_CACHE, 'utf8')); } catch { /* none yet */ }
+  return device;
+}
+
+// True when the cache changed; false when there was nothing new to write.
+function rememberDeviceNames(names) {
+  const fresh = Object.entries(names || {})
+    .filter(([id, value]) => typeof value === 'string' && value &&
+      deviceNames()[String(id).toLowerCase()] !== value);
+  if (!fresh.length) return false;
+  const merged = {...deviceNames()};
+  for (const [id, value] of fresh) merged[String(id).toLowerCase()] = value;
+  try {
+    fs.mkdirSync(path.dirname(DEVICE_CACHE), {recursive: true});
+    fs.writeFileSync(DEVICE_CACHE, JSON.stringify(merged, null, 2) + '\n');
+    device = merged;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function name(id) {
   const key = String(id).toLowerCase();
-  // Local names win: they cover what titledb cannot (demos, trials, Switch 2).
-  return localNames()[key] || load()[key] || null;
+  // Local names win (a curated name beats a machine one); the console names what
+  // titledb cannot (Switch 2); titledb names the rest.
+  return localNames()[key] || deviceNames()[key] || load()[key] || null;
 }
 
 // Ids no layer can name. Demos/trials have no app id in titledb, and new or
@@ -132,7 +167,11 @@ function slug(id) {
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 64);
-  return clean || String(id).toLowerCase();
+  // A name that is mostly non-latin script (プチコン4 -> "4") makes a useless
+  // folder, so those keep the id: the save still has a stable, findable home.
+  if (!clean || clean.replace(/[^A-Za-z0-9]/g, '').length < 3) return String(id).toLowerCase();
+  return clean;
 }
 
-module.exports = {refresh, name, label, slug, available, unnamed, namesStub, cachePath: CACHE};
+module.exports = {refresh, name, label, slug, available, unnamed, namesStub, deviceNames,
+  rememberDeviceNames, cachePath: CACHE, deviceCachePath: DEVICE_CACHE};

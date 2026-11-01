@@ -1,5 +1,5 @@
 {
-  "comment": "Program IDs this toolkit may WRITE to. Anything not listed is refused before a handle opens. Copy the entries you want into config/titles.local.json (gitignored) so your own console's ids never land in version control. The names map is safe to keep: title ids are global, and demos/trials need it because titledb has a null id for them.",
+  "comment": "Program IDs this toolkit may WRITE to. Anything not listed is refused before a handle opens. Copy the entries you want into config/titles.local.json (gitignored) so your own console's ids never land in version control. The names map is safe to keep: title ids are global, and demos/trials need it because titledb has a null id for them. list-apps names titles from the console's own control data and caches that in config/titles.nacp.json (gitignored); a name here overrides both.",
   "write": [],
   "names": {
     "010042d022aea000": "Seedsow Lullaby (demo)",

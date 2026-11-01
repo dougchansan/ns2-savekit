@@ -65,6 +65,10 @@ function checkLost(result) {
 function run(script, args, options = {}) {
   const result = spawnSync(process.execPath, [path.join(TOOLS, script), ...args], {
     encoding: 'utf8',
+    // --list-only prints one line per file, and the "listed N files" line that
+    // proves a probe worked comes last. The default 1 MiB cap would truncate a
+    // large save and make a real save look like a broken probe.
+    maxBuffer: 32 * 1024 * 1024,
     ...options,
   });
   const combined = (result.stdout || '') + (result.stderr || '');
@@ -169,8 +173,8 @@ async function titleRows(session) {
   const ids = [...result.out.matchAll(/0x([0-9a-f]{16})/g)].map(match => match[1]);
   const refreshed = await titles.refresh();
   if (!titles.available()) {
-    console.log('note: no title names available (titledb could not be fetched and');
-    console.log('config/titles.json has no names for these ids) - showing ids only.');
+    console.log('note: no title names available - the console gave none for these ids,');
+    console.log('titledb could not be fetched and config/titles.json has no names.');
     console.log('Connect once with network access, or add names to config/titles.json.');
   }
   // A partial list looks like a bug unless the gap is named. Say it once; this
@@ -179,8 +183,9 @@ async function titleRows(session) {
   if (unnamed.length && !namesNoted) {
     namesNoted = true;
     console.log(`\nnote: ${unnamed.length} of ${ids.length} titles ` +
-      `${unnamed.length === 1 ? 'has' : 'have'} no name - demos/trials and some`);
-    console.log('new releases are not in titledb.');
+      `${unnamed.length === 1 ? 'has' : 'have'} no name. Names come from the console's`);
+    console.log('own control data first; titledb is a Switch 1 catalogue, so it cannot name');
+    console.log('a Switch 2 title, and it has no entry for some demos/trials or new releases.');
     if (!refreshed) console.log('(titledb could not be fetched - connect once with network access for names)');
     console.log('add them to config/titles.local.json (keep any existing entries):');
     console.log('  ' + titles.namesStub(unnamed));
@@ -223,9 +228,132 @@ function accountSlots(session) {
     .filter(line => /^[0-9a-f]{32}$/i.test(line)))];
 }
 
+const LISTED_LINE = /listed \d+ files/;
+const OPEN_RESULT = /->\s*(0x[0-9a-f]+)/gi;
+const MOUNTED_LINE = /mounted space=(\S+) type=(\S+) rank=(\d+) index=(\d+) uid=([0-9a-f]{16})/i;
+
+// One read-only open of a single archive shape.
+//
+// The listing line is the proof that the archive really opened. A published
+// save-pull-root.cjs treated every *known* flag as if it had been passed, so a
+// --list-only call printed the account uids, exited 0 and listed nothing. That
+// "successful" probe was read as "no save" for every title (issue #2), so a
+// probe that does not list is now inconclusive - never evidence of absence.
+function probeShape(session, title, uid, space, type) {
+  const result = run('save-pull-root.cjs', [session, title, '.', uid, '--list-only',
+    '--space', String(space), '--type', String(type)]);
+  saveOpDone();
+  const out = result.out || '';
+  const mounted = MOUNTED_LINE.exec(out);
+  return {
+    ok: Boolean(result.ok && LISTED_LINE.test(out) && mounted),
+    out,
+    archive: mounted ? {
+      space: mounted[1],
+      type: mounted[2],
+      rank: Number(mounted[3]),
+      index: Number(mounted[4]),
+      uid: mounted[5].toLowerCase(),
+    } : null,
+  };
+}
+
+function describeArchive(archive) {
+  return `space=${archive.space} type=${archive.type}` +
+    (archive.rank ? ` rank=${archive.rank}` : '') +
+    (archive.index ? ` index=${archive.index}` : '');
+}
+
 // Which accounts actually have an archive for this title? A read-only listing
 // answers that, so the prompt only offers users that can be downloaded and is
 // skipped entirely when there is exactly one.
+//
+// A normal title keeps one Account archive per user, so probe exactly that shape
+// for one account, one space at a time. The puller's own sweep is up to 20 opens
+// per account and a long sweep is what wedges the console (docs/RESULTS.md); it
+// used to run once per account here, before any save had been found. Two
+// targeted probes (User then SdUser) are at most four opens.
+// A User/Account probe also matches the common uid-0 archive. That archive is
+// shared by every user, so it is reported separately rather than as this
+// account's save.
+function probeAccountSave(session, title, uid) {
+  const attempts = [];
+  let shared = null;
+  for (const space of [1, 4]) {
+    const probe = probeShape(session, title, uid, space, 1);
+    attempts.push(probe);
+    if (!probe.ok) continue;
+    if (probe.archive.uid === uid.slice(0, 16).toLowerCase()) {
+      return {found: probe, shared: null, attempts};
+    }
+    shared ||= probe;
+  }
+  return {found: null, shared, attempts};
+}
+
+// The other archives a title can own - Device, Bcat, Cache, Temporary - all use
+// uid 0 (the zero attribute). They are not per-account, so scan them once per
+// title rather than once per user. This is what finds titles like Sports Resort,
+// whose only archive is User/Device.
+const SHARED_TYPES = [3, 2, 5, 4];
+function probeSharedSave(session, title, uid) {
+  const attempts = [];
+  for (const space of [1, 4]) {
+    for (const type of SHARED_TYPES) {
+      const probe = probeShape(session, title, uid, space, type);
+      attempts.push(probe);
+      if (probe.ok) return {found: probe, attempts};
+    }
+  }
+  return {found: null, attempts};
+}
+
+// What the failed probes actually said. 0x7d402 is the console's "no save
+// data". Anything else - 0xe02 when the running title holds the save, a timeout,
+// or no answer at all - must not be reported as an absent save.
+function probeVerdict(attempts) {
+  const codes = [];
+  let silent = 0;
+  for (const attempt of attempts) {
+    const found = [...(attempt.out || '').matchAll(OPEN_RESULT)].map(match => match[1].toLowerCase());
+    if (found.length) codes.push(...found);
+    else if ((attempt.out || '').trim()) silent += 1;
+  }
+  const distinct = [...new Set(codes)];
+  return {distinct, silent,
+    absent: codes.length > 0 && silent === 0 && distinct.every(code => code === '0x7d402')};
+}
+
+function explainNoSave(title, attempts) {
+  const verdict = probeVerdict(attempts);
+  if (verdict.absent) {
+    console.log('\nno save data for this title on any account (0x7d402) - nothing to pull.');
+    console.log('A title has no archive until it has run once: launch it, close it fully');
+    console.log('(Home -> X -> Close), then retry in a new session.');
+    return;
+  }
+  console.log('\ncould not tell whether ' + titles.label(title) + ' has save data:');
+  if (verdict.distinct.length) {
+    console.log('  the console answered ' + verdict.distinct.join(', ') +
+      ' instead of opening an archive.');
+  }
+  if (verdict.silent) {
+    console.log('  ' + verdict.silent + ' probe(s) exited without listing anything. A probe');
+    console.log('  that never listed is a tool problem, not an absent save; the published');
+    console.log('  save-pull-root.cjs used to do exactly this (issue #2).');
+    const failed = attempts.map(attempt => attempt.out || '').join('\n').split('\n')
+      .map(line => line.trim()).filter(line => /^FAILED:/.test(line)).pop();
+    if (failed) console.log('  ' + failed);
+  }
+  if (verdict.distinct.includes('0xe02')) {
+    console.log('  hint: 0xe02 means the running title holds its save - close it fully');
+    console.log('        (Home -> X -> Close), then retry.');
+  } else if (verdict.silent) {
+    console.log('  hint: update the tools, or apply patches/apply.sh and start a new run.');
+  }
+  console.log('  the save was not touched.');
+}
+
 async function pickUid(session, title) {
   const cache = uidCache();
   const slots = accountSlots(session);
@@ -237,15 +365,32 @@ async function pickUid(session, title) {
     return typed;
   }
 
+  // One targeted probe per account. Only when no account has its own archive
+  // does the shared (Device/Bcat/Cache/Temporary) scan run, so an empty account
+  // costs two probes (up to four opens) instead of a 20-open sweep.
   const found = [];
+  const attempts = [];
+  let shared = null;
   for (let i = 0; i < slots.length; i++) {
-    const probe = run('save-pull-root.cjs', [session, title, '.', slots[i], '--list-only']);
-    saveOpDone();
-    if (probe.ok && /listed \d+ files/.test(probe.out)) found.push({index: i + 1, uid: slots[i]});
+    const probe = probeAccountSave(session, title, slots[i]);
+    attempts.push(...probe.attempts);
+    if (probe.found) found.push({index: i + 1, uid: slots[i]});
+    else if (probe.shared && !shared) shared = probe.shared;
   }
 
   if (found.length === 0) {
-    console.log('\nno save data for this title on any account (0x7d402) - nothing to pull.');
+    if (!shared) {
+      const scan = probeSharedSave(session, title, slots[0]);
+      attempts.push(...scan.attempts);
+      shared = scan.found;
+    }
+    if (shared) {
+      console.log('\nsave found: ' + describeArchive(shared.archive) +
+        ' - a shared archive, not tied to one account');
+      rememberUid(title, slots[0]);
+      return slots[0];
+    }
+    explainNoSave(title, attempts);
     return null;
   }
   if (found.length === 1) {
@@ -281,11 +426,11 @@ async function doBackup(session, title, uid) {
         'user-' + slots[i].slice(0, 8), stamp);
       console.log(`\nuser ${i + 1} of ${slots.length}: probing first (read-only listing)`);
       // Probe: a listing that succeeds proves this account has an archive here,
-      // so only accounts that actually have one get pulled.
-      const probe = run('save-pull-root.cjs', [session, title, '.', slots[i], '--list-only']);
-      saveOpDone();
-      const has = probe.ok && /listed \d+ files/.test(probe.out);
-      if (!has) {
+      // so only accounts that actually have one get pulled. Targeted, because
+      // "all" is chosen from accounts that already listed, and the sweep is the
+      // expensive part that wedges a session.
+      const probe = probeAccountSave(session, title, slots[i]);
+      if (!probe.found) {
         console.log('  no save for this user - skipped');
         continue;
       }
@@ -466,29 +611,48 @@ const ARTEMIS_FILES = /\/(system\.dat|saveg\.dat|save[0-9]{4}\.dat)$/im;
 // string 'all', which used to be passed to the puller as if it were a uid.
 async function resolveOne(session, title, uid) {
   if (uid !== 'all') return uid;
-  for (const slot of accountSlots(session)) {
-    const probe = run('save-pull-root.cjs', [session, title, '.', slot, '--list-only']);
-    saveOpDone();
-    if (probe.ok && /listed \d+ files/.test(probe.out)) {
+  const slots = accountSlots(session);
+  for (const slot of slots) {
+    const probe = probeAccountSave(session, title, slot);
+    if (probe.found) {
       console.log('using user ' + slot.slice(0, 8) + '…' + slot.slice(-4) + ' for this action');
       return slot;
     }
   }
-  return accountSlots(session)[0];
+  if (slots.length) {
+    const scan = probeSharedSave(session, title, slots[0]);
+    if (scan.found) {
+      console.log('using the shared ' + describeArchive(scan.found.archive) + ' archive');
+      return slots[0];
+    }
+  }
+  return slots[0];
 }
 
 async function titleLoop(session, title, uid) {
   let backup = null;
   let artemis = false;
   {
-    // 'all' is not a uid: probe the first account instead. This was the second
-    // place the literal string reached the puller and hung the session.
-    const probeUid = uid === 'all' ? (accountSlots(session)[0] || '') : uid;
-    if (probeUid) {
-      const probe = run('save-pull-root.cjs', [session, title, '.', probeUid, '--list-only']);
-      saveOpDone();
-      artemis = ARTEMIS_FILES.test(probe.out || '');
+    // 'all' is not a uid: look for the first account that actually has a save.
+    // Using slot 1 blindly hid the Artemis actions when that account was empty.
+    const candidates = uid === 'all' ? accountSlots(session) : [uid];
+    let listing = '';
+    let common = '';
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      const account = probeAccountSave(session, title, candidate);
+      if (account.found) {
+        listing = account.found.out;
+        break;
+      }
+      common ||= (account.shared || {}).out || '';
     }
+    if (!listing) listing = common;
+    if (!listing && candidates.some(Boolean)) {
+      const scan = probeSharedSave(session, title, candidates.find(Boolean));
+      if (scan.found) listing = scan.found.out;
+    }
+    artemis = ARTEMIS_FILES.test(listing);
   }
   for (;;) {
     const items = [

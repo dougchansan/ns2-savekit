@@ -1,7 +1,6 @@
 runs/
 saves/
 staging*/
-build/
 __pycache__/
 *.pyc
 *.part
@@ -9,9 +8,4 @@ __pycache__/
 config/titledb-cache.json
 config/uids.json
 config/titles.local.json
-tools/*/wifi_secret.h
-tools/esp32_hid/build_opt.h
-tools/esp32_gc/wifi_secret.h
-tools/esp32_pro/wifi_secret.h
-wifi_secret.h
-.harness-state.json
+config/titles.nacp.json
