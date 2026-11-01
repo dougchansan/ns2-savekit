@@ -8,10 +8,12 @@
 // the progress file keeps whatever succeeded: a batch can only ever save you
 // reboots, never lose an archive.
 //
-// Enumeration uses ns: (the installed-application list) because fs:srv's
-// save-data info reader is refused in this context: commands 60, 61 and 68 all
-// answer 0x320002 on every save-data space, while 62 (cache storage) works. See
-// tools/probe-info-reader.cjs for that evidence.
+// Enumeration uses ns: (the installed-application list). That list is not the
+// whole store: a cartridge title can vanish from it while its save stays in
+// system memory. The save-data info reader DOES work on the promoted root (see
+// save-inventory.cjs); this tool predates it and only pulls the installed set.
+// To include cartridge-only saves, run save-inventory.cjs first and pull the
+// app ids it lists.
 //
 // Saving one archive per boot is deliberate: opening a save filesystem is the
 // operation that crashes the host often enough that a single boot is the safe

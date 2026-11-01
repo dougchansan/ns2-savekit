@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // Find the fsp-srv command that enumerates save-data archives on this build.
 //
-// The save-info reader is the missing piece for a whole-space dump: once it
-// opens, ReadSaveDataInfo returns one entry per archive (program id, space, type,
-// uid, size) and each can be pulled like any other save.
+// SUPERSEDED for the working path: this probe opens a FRESH fsp-srv session, so
+// every reader shape is refused (0x320002/0x2ee002) even though the command is
+// available. The reader only opens on the promoted root handle. Use
+// tools/save-inventory.cjs, which does that and lists every archive. This file
+// is kept as the record of the failed shapes.
 //
 //   node probe-info-reader.cjs <run-directory>
 //

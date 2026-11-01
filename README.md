@@ -1,9 +1,10 @@
 # ns2-savekit
 
-Read, back up, install and modify **save data for any installed Switch 2 game**,
-driven over a live [ns2jb](https://gitlab.com/kurumuz/ns2jb) RPC connection.
-Nothing in the save path is game-specific: it opens a title's save archive, moves
-files in or out, commits, and verifies by hash.
+Read, back up, install and modify **save data for any Switch 2 title**, whether
+it is installed, on a card, or has no card inserted at all, driven over a live
+[ns2jb](https://gitlab.com/kurumuz/ns2jb) RPC connection. Nothing in the save path
+is game-specific: it opens a title's save archive, moves files in or out,
+commits, and verifies by hash.
 
 The second half of the repository applies that same save access to one engine:
 Artemis. There, a save file's execution pointer can be retargeted so the game
@@ -23,6 +24,7 @@ installed, and the numbers are reproducible from the commands in
 | Result | Evidence |
 | --- | --- |
 | Read another title's save through the promoted `pid=1` fsp-srv root | 70-file / 2.0 MB pull of `0100ee5021c9e000`, byte-verified |
+| Enumerate every save archive with no titledb | 17 User + 111 System archives from fs:srv cmd 61; MK8DX and Pokémon Sword saves with no card inserted |
 | Write another title's save in one committed transaction | 275 files, 4,511,900 bytes, read back and hashed |
 | Run arbitrary Lua inside a shipping Artemis game from save data alone | `ns2jb-report.txt` written by the game's own interpreter |
 | Install a third-party save with no JKSV, no Switch 1, no Nintendo transfer | Seedsow Lua Editor v0.1.2 running from slot 1 |
@@ -40,7 +42,9 @@ care what engine the game uses.
 | List what is in a save without pulling it | `save-pull-root.cjs --list-only` |
 | Remove one file | `save-delete-root.cjs` |
 | Find which account owns a save | `find-save-uid.cjs`, or pass the uid yourself |
-| See what exists | `list-apps.cjs` |
+| Enumerate **every** save archive (no titledb, no card needed) | `save-inventory.cjs` |
+| Pull from an inventory without NCM or titledb | `pull-inventory.cjs` (resumable batch, default 5) |
+| List installed applications | `list-apps.cjs` |
 
 Artemis is where we prove the harder half — running code from a save — but a
 save backup/restore/mod workflow needs nothing Artemis-specific, and the same

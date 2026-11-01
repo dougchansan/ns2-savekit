@@ -19,9 +19,71 @@
 | 0x22 | Index (u16) | archive index, meaningful for Cache |
 
 There is no wildcard: this call cannot mount "the save data partition" or every
-title's save. Enumerating archives is `OpenSaveDataInfoReader` (60/61/68), which
-answers `0x320002` through the promoted root on this build (see
-`probe-info-reader.cjs`), so the tool probes attributes instead.
+title's save. Enumerating archives is `OpenSaveDataInfoReader` (60/61). The
+reader **does** work, but only on the promoted root handle: command 60 opens an
+all-space reader, command 61 takes a one-byte space id. A fresh `fsp-srv` session
+gets `0x320002`/`0x2ee002`, which is what an earlier probe measured and why this
+document used to call the reader unavailable. `save-inventory.cjs` opens it
+read-only and reads pages of `SaveDataInfo` records (see below).
+
+## The whole store: enumerate first
+
+`save-inventory.cjs` asks FS for its own index instead of walking NCM's
+installed-application list or probing attributes. It needs no titledb and no
+knowledge of which cards are inserted:
+
+```sh
+node tools/save-inventory.cjs <run-directory> --space 1 --names
+node tools/save-inventory.cjs <run-directory> --json saves/inventory.json
+```
+
+Measured on 2026-11-01 (`runs/switch2-kZvIBD`, SW 23.0.1): **128 archives** total
+— 111 System, 17 User, 0 Temporary, and the SD spaces unavailable with no card.
+The 17 User archives are the useful part. They included:
+
+| app id | archive | why it matters |
+| --- | --- | --- |
+| `0100f43008c44000` | Account + Bcat | Pokémon Legends: Z-A, card inserted |
+| `0100152000022000` | Account + Device | Mario Kart 8 Deluxe, **card not inserted** |
+| `0100abf008968000` | Account + Bcat | Pokémon Sword, **card not inserted** |
+| `010012900d38a000` | Account | Nora trial, program removed from NCM |
+| `010042d022aea000` | Account | Seedsow demo |
+| `0100c9100b06a000` | Account + Cache | SmileBASIC 4 |
+| `0100ee5021c9e000` | Account per user | Seedsow full |
+| `0400c3f00006e000` | Account per user | Mario Kart World |
+| `0100b4b00f9f6000` | Account | SmileBASIC 4 demo |
+| `04008e001f098000` | Bcat + Device | Switch Sports Resort |
+
+That list is the answer to "the save is in system memory, so why can't the kit
+see it": the kit was asking the wrong service (NCM applications) instead of the
+save-data index. The archive is addressed by `(space, application id, uid,
+type)`, and the index supplies all four, including titles whose card is gone.
+
+The reader is metadata only, and its `size` is the archive allocation, not the
+sum of file bytes (Z-A: 17,121,280 in the index, 3,186,611 pulled).
+
+## Pulling from the inventory
+
+`pull-inventory.cjs` consumes that JSON and pulls the exact archive identity,
+with no NCM and no titledb:
+
+```sh
+node tools/pull-inventory.cjs <run> saves/from-inventory \
+  --inventory saves/inventory.json --space 1 --type 1
+```
+
+It defaults to a batch of up to **five** per run (`--limit 0` pulls every pending
+archive) and keeps `inventory-progress.json`, so a reboot resumes at the next
+entry. The batch stops at the first session loss. On 2026-11-01 one boot took 20
+open attempts without wedging and pulled 15 of the 17 User archives (525 files,
+16.4 MB). Two were blocked: SmileBASIC 4's own Account save (`0xe02` - the app
+hosting the exploit holds it) and its Cache archive (`0x7d402` - attribute
+unresolved). The old one-per-boot rule is an empirical risk, not a hard cap.
+
+Empty archives are real: the index reported an 8.7 MB Pokémon Sword Account
+archive, but the mounted filesystem had **zero files**. That is a created-but-
+unused save, not a broken pull. The manifest records `files: 0` and the entry is
+marked done, not failed.
 
 ## What each SaveDataType needs
 
@@ -91,9 +153,9 @@ What differs between games is **which archives** the attribute selects, above.
 
 ## Known limits
 
-- Without the info reader there is no way to learn an unknown `Index`. `--index`
-  covers the cases a game is known to use; the default 0 is what nearly all
-  Account saves use.
+- The inventory now carries Rank and Index too, but every entry on this console
+  read zero and a Cache archive still did not open at rank 0/index 0, so the
+  Cache attribute is unresolved. `--rank`/`--index` remain the knobs to try.
 - `--all` is a sweep. On this console a 60-open sweep has wedged sessions, so the
   default stops early and `--all` warns.
 - The write path (`save-write-stage.cjs`) still opens exactly User/Account

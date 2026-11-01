@@ -558,13 +558,33 @@ async function main() {
     heading(rows.length + ' installed applications  (✔ = write-allowed)');
     rows.forEach((row, index) => console.log('  [' + (index + 1) + '] ' + row.label));
     const picked = await ask('\nNumber 1-' + rows.length +
-      '  (i = save inventory, blank = quit): ');
+      '  (i = installed inventory, a = all save archives, p = pull next batch (5), blank = quit): ');
     if (closed || picked === '') break;
     if (picked.toLowerCase() === 'i') {
       // The inventory is the read-only overview: every archive, every account,
       // with size and state, before anything is pulled.
       echoCommand('node tools/inventory.cjs ' + quote(session));
       run('inventory.cjs', [session], {stdio: 'inherit'});
+      continue;
+    }
+    if (picked.toLowerCase() === 'a') {
+      // Whole-store inventory: fs:srv's save-data index through the promoted
+      // root, not NCM's installed-app list. Cartridge saves stay visible when
+      // the card is out, and no titledb is needed.
+      const at = path.join(REPO, 'saves', 'inventory.json');
+      echoCommand('node tools/save-inventory.cjs ' + quote(session) + ' --names --json ' + quote(at));
+      run('save-inventory.cjs', [session, '--names', '--json', at], {stdio: 'inherit'});
+      continue;
+    }
+    if (picked.toLowerCase() === 'p') {
+      // Pull from that inventory with no NCM lookup. Batches up to five by
+      // default; the progress file resumes after a reboot.
+      const at = path.join(REPO, 'saves', 'inventory.json');
+      const out = path.join(REPO, 'saves', 'from-inventory');
+      echoCommand('node tools/pull-inventory.cjs ' + quote(session) + ' ' + quote(out) +
+        ' --inventory ' + quote(at) + ' --space 1 --type 1');
+      run('pull-inventory.cjs', [session, out, '--inventory', at, '--space', '1', '--type', '1'],
+        {stdio: 'inherit'});
       continue;
     }
     const index = Number(picked) - 1;
