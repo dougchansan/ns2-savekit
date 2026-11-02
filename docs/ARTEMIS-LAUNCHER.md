@@ -352,13 +352,19 @@ save9999.dat  ca47241097a250615e6a1a5c263f86b16729691d91740754a791c6006e1cd63c
 
 The staging, receipt, backup-integrity and delete-propagation fixes landed after
 this hardware run. No live RPC session was available to exercise them on the
-console: two fresh-boot acquisitions for the Nora attempt failed at ns2jb stage
-2/4 (`Native batch did not terminate`, then `Clean alias did not qualify within
-its attempt limit`), and no session has been held since. Validation for these
-changes is therefore **offline only** (29 installer tests + 7 delete-result
-tests). Still to prove on hardware: a fresh identity-bearing pull feeding a
-receipt; receipt-driven restore preflight/`--dry-run`; refusal of a modified
-launcher file; `save-delete-root` propagation; and the post-rollback pull.
+console. Three fresh-boot acquisitions failed at ns2jb stage 2/4:
+
+1. `Native batch did not terminate; resources retained`
+2. `Clean alias did not qualify within its attempt limit`
+3. `The bounded native leak contains no qualified, encodable link`
+
+The console was restored to the HOME menu by a power cycle after each wedged
+attempt; no save operation was issued in any of them, so nothing on the console
+changed. Validation for these changes is therefore **offline only** (29
+installer tests + 7 delete-result tests). Still to prove on hardware: a fresh
+identity-bearing pull feeding a receipt; receipt-driven restore
+preflight/`--dry-run`; refusal of a modified launcher file; `save-delete-root`
+propagation; and the post-rollback pull.
 
 The Seedsow installation described above predates receipts, so its rollback uses
 the conservative `--adopt-legacy` path (live bytes must equal the pinned release)
