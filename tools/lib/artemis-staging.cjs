@@ -53,7 +53,7 @@ async function realOrSelf(p) {
   }
 }
 
-async function assertSafeTarget(outDir, {titleId, repo}) {
+async function assertSafeTarget(outDir, {titleId, repo, adopt = null}) {
   const target = path.resolve(outDir);
   const dangerous = new Set([
     path.parse(target).root,
@@ -111,14 +111,29 @@ async function assertSafeTarget(outDir, {titleId, repo}) {
         code: 'EUNSAFE',
       });
     }
-    // Existing directory: only ours, and only for this title.
-    let marker;
+    // Existing directory: ours, or an older unmarked staging directory that the
+    // caller can verify by content. Adoption only writes the marker; the old
+    // directory is not touched until a complete new payload is promoted.
+    let marker = null;
     try {
       marker = JSON.parse(await fsp.readFile(path.join(target, MARKER), 'utf8'));
-    } catch {
-      throw Object.assign(new Error(
-        'refusing to replace existing directory ' + target +
-        ' - it has no ' + MARKER + ' marker, so it is not ours'), {code: 'EUNSAFE'});
+    } catch { /* no marker: maybe a pre-marker staging directory */ }
+    if (!marker) {
+      if (!adopt) {
+        throw Object.assign(new Error(
+          'refusing to replace existing directory ' + target +
+          ' - it has no ' + MARKER + ' marker, so it is not ours'), {code: 'EUNSAFE'});
+      }
+      const verdict = await adopt(target);
+      if (!verdict || !verdict.ok) {
+        throw Object.assign(new Error(
+          'refusing to adopt existing directory ' + target +
+          ' - it does not contain exactly a verifiable staged payload'), {
+          code: 'EUNSAFE', problems: verdict && verdict.problems || [],
+        });
+      }
+      await writeMarker(target, titleId);
+      marker = {tool: TOOL, version: VERSION, titleId};
     }
     if (marker.tool !== TOOL || marker.version !== VERSION || marker.titleId !== titleId) {
       throw Object.assign(new Error(

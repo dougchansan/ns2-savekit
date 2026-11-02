@@ -27,15 +27,17 @@ test('a zero result is the only successful deletion', () => {
   assert.strictEqual(isGone(EXIT.ok), true);
 });
 
-test('a not-found result is distinct and non-zero', () => {
-  assert.strictEqual(classifyFsResult(0x2), 'not-found');
+test('the canonical FS not-found result is 0x202, not a bare 0x2', () => {
+  assert.strictEqual(classifyFsResult(0x202), 'not-found');
+  assert.strictEqual(classifyFsResult(0x2), 'failed',
+    'a description without the FS module must fail closed');
   assert.strictEqual(exitForClass('not-found'), EXIT.notFound);
   assert.notStrictEqual(EXIT.notFound, 0);
   assert.strictEqual(isGone(EXIT.notFound), true, 'already absent is safe to skip');
 });
 
 test('every other filesystem result is a failure', () => {
-  for (const value of [0x1, 0x6400, 0x7d402, 0x202, 0x2ee002]) {
+  for (const value of [0x1, 0x2, 0x6400, 0x7d402, 0x2ee002]) {
     assert.strictEqual(classifyFsResult(value), 'failed', '0x' + value.toString(16));
     assert.strictEqual(exitForClass('failed'), EXIT.failed);
     assert.strictEqual(isGone(exitForClass('failed')), false);
@@ -66,10 +68,10 @@ test('a commit failure is a commit exit even when the FS accepted the delete', (
 });
 
 test('not-found is only accepted when the reopen agrees it is absent', () => {
-  const gone = decideDelete({fsResult: 0x2, commitResult: 0, stillPresent: false});
+  const gone = decideDelete({fsResult: 0x202, commitResult: 0, stillPresent: false});
   assert.strictEqual(gone.code, EXIT.notFound);
   assert.strictEqual(isGone(gone.code), true);
-  const contradiction = decideDelete({fsResult: 0x2, commitResult: 0, stillPresent: true});
+  const contradiction = decideDelete({fsResult: 0x202, commitResult: 0, stillPresent: true});
   assert.strictEqual(contradiction.code, EXIT.failed);
 });
 

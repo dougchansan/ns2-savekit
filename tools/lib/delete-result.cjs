@@ -22,8 +22,13 @@ const EXIT = {
   commit: 12,
 };
 
-// SaveData filesystem result codes are 22-bit, module 1 (fs).
-const FS_NOT_FOUND = 0x2;
+// Horizon Result encoding: bits 0-8 are the description, bits 9-17 the module.
+// The filesystem module is 1 and PathNotFound is description 2, so the canonical
+// result is (1 << 9) | 2 = 0x202. The engine's domain.cjs stores
+// `canonicalResult = result & 0x3fffff`, so that is the value seen here; a bare
+// 0x2 is a description without a module and is NOT treated as "not found"
+// (save-write-stage.cjs uses the same 0x202 comparison).
+const FS_NOT_FOUND = 0x202;
 
 function classifyFsResult(canonical) {
   const value = Number(canonical) & 0x3fffff;

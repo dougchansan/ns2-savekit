@@ -122,12 +122,13 @@ function note(lines) {
 function parseArgs(argv) {
   const [command, ...rest] = argv;
   const options = {command, _: []};
-  const takesValue = new Set(['title', 'uid', 'backup', 'out', 'source', 'staging']);
+  const takesValue = new Set(['title', 'uid', 'backup', 'out', 'source', 'staging', 'snapshot']);
   for (let i = 0; i < rest.length; i++) {
     const token = rest[i];
     if (!token.startsWith('--')) { options._.push(token); continue; }
     const name = token.slice(2);
-    if (['confirm', 'confirm-restore', 'dry-run', 'json', 'adopt-legacy'].includes(name)) {
+    if (['confirm', 'confirm-restore', 'confirm-migration', 'dry-run', 'json',
+      'adopt-legacy'].includes(name)) {
       options[name] = true;
       continue;
     }
@@ -190,11 +191,16 @@ async function receiptsForTitle(titleId) {
     names = await fsp.readdir(receipts.receiptDir());
   } catch { return []; }
   const found = [];
+  const seen = new Set();
   for (const name of names) {
     if (!name.startsWith(titleId + '-') || !name.endsWith('.json')) continue;
     try {
       const receipt = JSON.parse(await fsp.readFile(path.join(receipts.receiptDir(), name), 'utf8'));
-      if (receipt.title && receipt.title.id === titleId) found.push(receipt);
+      if (!receipt.title || receipt.title.id !== titleId) continue;
+      const uid = receipt.account && receipt.account.uid;
+      if (!uid || seen.has(uid)) continue;
+      seen.add(uid);
+      found.push(receipt);
     } catch { /* unreadable receipts are not a match */ }
   }
   return found;
@@ -396,10 +402,56 @@ async function fillBuild({title, upstream, backup, build, retarget = retargetSav
   return retarget(path.join(backup.dir, TRIGGER), path.join(build, TRIGGER));
 }
 
+// Older installer versions staged without a marker. They may be adopted only
+// when the directory contains exactly the expected file set, every launcher file
+// matches the pinned release, and the trigger parses as our retarget. Adoption
+// writes the marker; it never deletes or overwrites anything.
+async function verifyLegacyStaging(directory, title, options = {}) {
+  const expected = options.expected || expectedHashes(title);
+  const checkTrigger = options.checkTrigger || (async file => {
+    const shown = run('python3', [path.join(TOOLS, 'artemis-save.py'), 'show', file]);
+    if (shown.status !== 0) return {ok: false, why: 'save9999.dat is not a readable BOWS container'};
+    const text = String(shown.stdout || '');
+    const script = /script='([^']+)'/.exec(text);
+    const version = /BOWS v(\d+)/.exec(text);
+    if (!script || script[1] !== 'save:/inject.iet') {
+      return {ok: false, why: 'save9999.dat does not point at save:/inject.iet'};
+    }
+    if (!version || !['1002', '1003'].includes(version[1])) {
+      return {ok: false, why: 'save9999.dat has an unsupported container version'};
+    }
+    return {ok: true};
+  });
+  const problems = [];
+  const allowed = new Set([...LAUNCHER_FILES, TRIGGER, 'manifest.json']);
+  for (const entry of await fsp.readdir(directory, {withFileTypes: true})) {
+    if (!entry.isFile()) { problems.push(entry.name + ' is not a regular file'); continue; }
+    if (!allowed.has(entry.name)) problems.push('unexpected file ' + entry.name);
+  }
+  for (const [p, want] of Object.entries(expected)) {
+    try {
+      const bytes = await fsp.readFile(path.join(directory, p.slice(1)));
+      if (sha256(bytes) !== want) problems.push(p + ' does not match the pinned release');
+    } catch {
+      problems.push('missing ' + p);
+    }
+  }
+  const trigger = path.join(directory, TRIGGER);
+  if (exists(trigger)) {
+    const verdict = await checkTrigger(trigger);
+    if (!verdict.ok) problems.push(verdict.why);
+  } else {
+    problems.push('missing /' + TRIGGER);
+  }
+  return {ok: problems.length === 0, problems};
+}
+
 // Build in a marked sibling, then promote. On any failure only the build
 // directory is removed; a previously staged payload stays exactly as it was.
-async function stageTo({title, upstream, backup, outDir, retarget = retargetSave, repo = REPO}) {
-  const target = await staging.assertSafeTarget(outDir, {titleId: title.id, repo});
+async function stageTo({title, upstream, backup, outDir, retarget = retargetSave, repo = REPO,
+  legacyStage = null}) {
+  const target = await staging.assertSafeTarget(outDir, {titleId: title.id, repo,
+    adopt: legacyStage || (dir => verifyLegacyStaging(dir, title))});
   const build = await staging.beginBuild(target, title.id);
   try {
     const built = await fillBuild({title, upstream, backup, build, retarget});
@@ -516,27 +568,32 @@ async function newestBackup(title, uid) {
   return null;
 }
 
-// ------------------------------------------------------------------ receipt --
-function makeReceipt({title, uid, backup, plan, upstream}) {
-  const original = new Map(backup.entries.map(entry => [entry.path, entry]));
-  const now = new Date().toISOString();
-  const installed = plan.files.map(file => {
+// ------------------------------------------------------------------ records --
+// One immutable ORIGINAL record is the rollback baseline; every install after
+// the first is a TRANSACTION and never replaces it.
+function installedEntries({plan, backup}) {
+  const before = new Map(backup.entries.map(entry => [entry.path, entry]));
+  return plan.files.map(file => {
     const entry = {path: file.path, sha256: file.sha256, size: file.size,
       kind: file.replace ? 'replace' : 'add'};
     if (file.replace) {
-      const before = original.get(file.path);
-      entry.originalSha256 = before.sha256;
-      entry.originalSize = before.size;
+      const prior = before.get(file.path);
+      entry.originalSha256 = prior.sha256;
+      entry.originalSize = prior.size;
     }
     return entry;
   });
+}
+
+function originalRecord({title, uid, backup, plan}) {
+  const trigger = backup.entries.find(entry => entry.path === '/' + TRIGGER);
   return {
     version: receipts.VERSION,
-    kind: receipts.KIND,
-    status: 'installing',
+    kind: receipts.KIND_ORIGINAL,
+    status: 'original',
     origin: 'install',
-    createdAt: now,
-    updatedAt: now,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
     title: {id: title.id, name: title.name},
     account: {uid},
     upstream: {repo: UPSTREAM_REPO, commit: UPSTREAM_COMMIT, tag: UPSTREAM_TAG},
@@ -545,11 +602,76 @@ function makeReceipt({title, uid, backup, plan, upstream}) {
       manifestSha256: backup.manifestSha256,
       entries: backup.entries.length,
       bytes: backup.bytes,
-      triggerSha256: original.get('/' + TRIGGER).sha256,
+      triggerSha256: trigger.sha256,
       identity: backup.identity,
+      identitySource: 'pull',
     },
-    installed,
+    installed: installedEntries({plan, backup}),
     postInstallVerified: false,
+  };
+}
+
+// A pre-install baseline must not already contain this launcher: a backup taken
+// after an install is a verification snapshot, not an original state. Accepting
+// it would silently move the rollback baseline forward.
+function preinstallProblems(backup, title, expected = expectedHashes(title)) {
+  const problems = [];
+  for (const [p, want] of Object.entries(expected)) {
+    const entry = backup.entries.find(e => e.path === p);
+    if (entry && entry.sha256 === want) {
+      problems.push(p + ' is already the installed payload in this backup');
+    }
+  }
+  return problems;
+}
+
+function liveMatchesFiles(live, files) {
+  const map = new Map(live.entries.map(entry => [entry.path, entry.sha256]));
+  return files.every(file => map.get(file.path) === file.sha256);
+}
+
+async function originalDigest(title, uid) {
+  return receipts.sha256(await fsp.readFile(receipts.originalPath(title.id, uid)));
+}
+
+async function ensureOriginal(title, uid) {
+  const existing = await receipts.readOriginal(title.id, uid);
+  if (existing) return existing;
+  const legacy = await receipts.readReceipt(title.id, uid);
+  if (!legacy) return null;
+  const adopted = receipts.adoptLegacyReceipt(legacy, {launcherFiles: LAUNCHER_FILES});
+  if (adopted.problems.length) {
+    throw new Failure(EXIT.prereq, 'the legacy receipt cannot be adopted as an original baseline',
+      adopted.problems.map(p => '  ' + p));
+  }
+  await receipts.writeImmutable(receipts.originalPath(title.id, uid), adopted.record);
+  console.log('adopted the legacy receipt as the immutable original baseline');
+  return adopted.record;
+}
+
+function transactionRecord({title, uid, original, originalSha, live, plan}) {
+  return {
+    version: receipts.VERSION,
+    kind: receipts.KIND_TRANSACTION,
+    id: receipts.transactionId(),
+    status: 'installing',
+    origin: 'update',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    title: {id: title.id, name: title.name},
+    account: {uid},
+    upstream: {repo: UPSTREAM_REPO, commit: UPSTREAM_COMMIT, tag: UPSTREAM_TAG},
+    originalSha256: originalSha,
+    originalPath: receipts.originalPath(title.id, uid),
+    preState: {
+      source: 'pull',
+      dir: path.resolve(live.dir),
+      manifestSha256: live.manifestSha256,
+      entries: live.entries.length,
+      files: live.entries.map(entry => ({path: entry.path, size: entry.size,
+        sha256: entry.sha256})),
+    },
+    installed: installedEntries({plan, backup: live}),
     progress: {trigger: 'pending', deleted: []},
   };
 }
@@ -568,75 +690,158 @@ async function install(options) {
       'use the plan/dry-run command to inspect the plan first');
   }
   const runTag = stamp();
+  // A dry run must not write local state either, so it reads (and, for a legacy
+  // single receipt, previews) without adopting anything.
+  const original = options['dry-run']
+    ? ((await receipts.readOriginal(title.id, uid)) ||
+       (await receipts.readReceipt(title.id, uid)))
+    : await ensureOriginal(title, uid);
 
   let backupDir = options.backup ? path.resolve(options.backup) : null;
-  if (!backupDir) {
+  if (!backupDir && !original) {
     backupDir = await newestBackup(title, uid);
     if (backupDir) console.log('using the existing validated backup: ' + backupDir);
   }
+
   if (options['dry-run']) {
-    if (!backupDir) {
+    const source = backupDir || (original && original.backup.path);
+    if (!source) {
       throw new Failure(EXIT.prereq,
         'dry run needs a local backup (--backup); nothing was pulled or written');
     }
-    const backup = await loadBackup(backupDir, title, {requireIdentity: true, uid});
+    const backup = await loadBackup(source, title, {requireIdentity: true, uid});
     const {plan} = await stageAndPlan({title, backup, options});
     printPlan(title, backup, plan);
     console.log('\ndry run: nothing was pulled and nothing was written to the console.');
+    if (original) console.log('rollback baseline: ' + receipts.originalPath(title.id, uid));
     return EXIT.ok;
   }
-  if (!backupDir) {
-    const target = path.join(savesRoot(), title.slug, 'user-' + uid.slice(0, 8),
-      runTag + '-artemis-backup');
-    console.log('no backup yet: pulling one into ' + target);
-    backupDir = (await pullSnapshot(session, title, uid, target, 'backup')).dir;
+
+  if (!original) {
+    // -------- first installation: the backup becomes the immutable baseline
+    if (!backupDir) {
+      const target = path.join(savesRoot(), title.slug, 'user-' + uid.slice(0, 8),
+        runTag + '-artemis-backup');
+      console.log('no backup yet: pulling one into ' + target);
+      backupDir = (await pullSnapshot(session, title, uid, target, 'backup')).dir;
+    }
+    const backup = await loadBackup(backupDir, title, {requireIdentity: true, uid});
+    const baseline = preinstallProblems(backup, title);
+    if (baseline.length) {
+      throw new Failure(EXIT.conflict,
+        'this backup already contains the Artemis payload, so it is a post-install ' +
+        'snapshot, not a pre-install baseline', baseline.concat([
+          '  refusing to move the rollback baseline forward',
+          '  if the payload is already on the console, use migrate-legacy instead',
+        ]));
+    }
+    const {plan, target} = await stageAndPlan({title, backup, options});
+    printPlan(title, backup, plan);
+    if (plan.conflicts.length) {
+      throw new Failure(EXIT.conflict, 'refusing to overwrite files this installer does not own',
+        plan.conflicts.map(c => '  ' + c.name + ': ' + c.reason));
+    }
+    // Written before the console write: if the write is interrupted, the
+    // baseline still describes the true pre-install state.
+    const record = originalRecord({title, uid, backup, plan});
+    const recordFile = receipts.originalPath(title.id, uid);
+    await receipts.writeImmutable(recordFile, record);
+    console.log('\noriginal baseline: ' + recordFile);
+
+    console.log('\nwriting in one transaction (save-write-stage.cjs)');
+    const written = runStep('save-write-stage.cjs',
+      [session, title.id, uid, backup.dir, path.join(target, 'manifest.json')],
+      {stdio: 'inherit', cwd: target});
+    if (written.status !== 0) {
+      throw new Failure(written.status === 3 ? EXIT.sessionLost : EXIT.verify,
+        'the write did not complete; the original baseline and the backup at ' +
+        backup.dir + ' are intact');
+    }
+    const verifyDir = path.join(path.dirname(backup.dir), runTag + '-artemis-verify');
+    console.log('\nverifying by pulling the save again into ' + verifyDir);
+    await pullSnapshot(session, title, uid, verifyDir, 'verification');
+    const compared = runStep('verify-save-manifest.cjs',
+      [verifyDir, path.join(target, 'manifest.json')]);
+    if (compared.status !== 0) {
+      throw new Failure(EXIT.verify, 'the pulled save does not match the manifest; ' +
+        'the original baseline is unchanged');
+    }
+    console.log('installed and verified: ' + target);
+    console.log('original baseline: ' + recordFile);
+    console.log('rollback: node tools/artemis-launcher.cjs restore ' + session +
+      ' --title ' + title.id + ' --uid ' + uid + ' --confirm-restore');
+    return EXIT.ok;
   }
-  const backup = await loadBackup(backupDir, title, {requireIdentity: true, uid});
-  const {plan, target} = await stageAndPlan({title, backup, options});
-  printPlan(title, backup, plan);
+
+  // -------- reinstall/update: original stays immutable
+  const originalProblems = receipts.validateOriginal(original, {
+    titleId: title.id, uid, commit: UPSTREAM_COMMIT,
+    launcherFiles: LAUNCHER_FILES, trigger: TRIGGER,
+  });
+  if (originalProblems.length) {
+    throw new Failure(EXIT.prereq, 'the original baseline failed validation',
+      originalProblems.map(p => '  ' + p));
+  }
+  const liveDir = path.join(savesRoot(), title.slug, 'user-' + uid.slice(0, 8),
+    runTag + '-artemis-presstate');
+  console.log('reading the live save before staging (read-only)');
+  const live = await pullSnapshot(session, title, uid, liveDir, 'pre-state');
+  const {plan, target} = await stageAndPlan({title, backup: live, options});
+  printPlan(title, live, plan);
   if (plan.conflicts.length) {
     throw new Failure(EXIT.conflict, 'refusing to overwrite files this installer does not own',
       plan.conflicts.map(c => '  ' + c.name + ': ' + c.reason));
   }
-  const receipt = makeReceipt({title, uid, backup,
-    plan, upstream: {repo: UPSTREAM_REPO, commit: UPSTREAM_COMMIT}});
-  const receiptFile = await receipts.writeReceipt(receipt);
-  console.log('\nreceipt: ' + receiptFile);
+  if (liveMatchesFiles(live, plan.files)) {
+    // Nothing to write. Verify the existing bytes rather than manufacturing a
+    // transaction or touching the baseline.
+    const checked = runStep('verify-save-manifest.cjs',
+      [live.dir, path.join(target, 'manifest.json')]);
+    if (checked.status !== 0) {
+      throw new Failure(EXIT.verify, 'the live save matches the plan but the manifest check failed');
+    }
+    console.log('\nalready installed: every staged file matches the live save; ' +
+      'no write and no transaction were made.');
+    console.log('original baseline: ' + receipts.originalPath(title.id, uid) + ' (unchanged)');
+    return EXIT.ok;
+  }
+  const originalSha = await originalDigest(title, uid);
+  const tx = transactionRecord({title, uid, original, originalSha, live, plan});
+  const txFile = await receipts.writeTransaction(tx);
+  console.log('\nupdate transaction: ' + txFile);
+  console.log('original baseline: ' + receipts.originalPath(title.id, uid) + ' (unchanged)');
 
   console.log('\nwriting in one transaction (save-write-stage.cjs)');
   const written = runStep('save-write-stage.cjs',
-    [session, title.id, uid, backup.dir, path.join(target, 'manifest.json')],
+    [session, title.id, uid, live.dir, path.join(target, 'manifest.json')],
     {stdio: 'inherit', cwd: target});
   if (written.status !== 0) {
-    receipt.status = 'install-failed';
-    receipt.error = 'save-write-stage exited ' + written.status;
-    receipt.updatedAt = new Date().toISOString();
-    await receipts.writeReceipt(receipt);
+    tx.status = 'install-failed';
+    tx.error = 'save-write-stage exited ' + written.status;
+    tx.updatedAt = new Date().toISOString();
+    await receipts.writeTransaction(tx);
     throw new Failure(written.status === 3 ? EXIT.sessionLost : EXIT.verify,
-      'the write did not complete; the backup at ' + backup.dir + ' is intact');
+      'the update did not complete; the original baseline is unchanged');
   }
-
-  const verifyDir = path.join(path.dirname(backup.dir), runTag + '-artemis-verify');
+  const verifyDir = path.join(path.dirname(live.dir), runTag + '-artemis-verify');
   console.log('\nverifying by pulling the save again into ' + verifyDir);
-  const checked = await pullSnapshot(session, title, uid, verifyDir, 'verification');
+  await pullSnapshot(session, title, uid, verifyDir, 'verification');
   const compared = runStep('verify-save-manifest.cjs',
     [verifyDir, path.join(target, 'manifest.json')]);
   if (compared.status !== 0) {
-    receipt.status = 'install-failed';
-    receipt.error = 'post-install pull did not match the manifest';
-    receipt.updatedAt = new Date().toISOString();
-    await receipts.writeReceipt(receipt);
-    throw new Failure(EXIT.verify, 'the pulled save does not match the manifest');
+    tx.status = 'install-failed';
+    tx.error = 'post-install pull did not match the manifest';
+    tx.updatedAt = new Date().toISOString();
+    await receipts.writeTransaction(tx);
+    throw new Failure(EXIT.verify, 'the pulled save does not match the manifest; ' +
+      'the original baseline is unchanged');
   }
-  receipt.status = 'installed';
-  receipt.postInstallVerified = true;
-  receipt.updatedAt = new Date().toISOString();
-  await receipts.writeReceipt(receipt);
-  console.log('installed and verified: ' + target);
-  console.log('backup: ' + backup.dir);
-  console.log('receipt: ' + receiptFile);
-  console.log('rollback: node tools/artemis-launcher.cjs restore ' + session +
-    ' --title ' + title.id + ' --uid ' + uid + ' --confirm-restore');
+  tx.status = 'installed';
+  tx.verified = true;
+  tx.updatedAt = new Date().toISOString();
+  await receipts.writeTransaction(tx);
+  console.log('updated and verified: ' + target);
+  console.log('original baseline: ' + receipts.originalPath(title.id, uid) + ' (unchanged)');
   return EXIT.ok;
 }
 
@@ -777,150 +982,325 @@ function requireRestoreAuthorization(options) {
   }
 }
 
-async function restoreFromReceipt({options, title, session, uid, receipt}) {
-  const problems = receipts.validateReceipt(receipt, {
+function candidateStates(original, transactions) {
+  const states = [{name: 'original install', files: original.installed}];
+  for (const tx of transactions) {
+    if (Array.isArray(tx.installed) && tx.installed.length) {
+      states.push({name: 'transaction ' + tx.id, files: tx.installed});
+    }
+    if (tx.preState && Array.isArray(tx.preState.files) && tx.preState.files.length) {
+      states.push({name: 'pre-state ' + tx.id, files: tx.preState.files});
+    }
+  }
+  return states;
+}
+
+const LAUNCHER_PATHS = [...LAUNCHER_FILES.map(name => '/' + name), '/' + TRIGGER];
+
+function stateMatchesLive(live, files) {
+  const liveMap = new Map(live.entries.map(entry => [entry.path, entry.sha256]));
+  const stateMap = new Map(files.map(entry => [entry.path, entry.sha256]));
+  return LAUNCHER_PATHS.every(p => (liveMap.get(p) || null) === (stateMap.get(p) || null));
+}
+
+// The pre-install target: launcher files that were not in the original backup
+// are removed; the trigger is restored from it.
+function restoreTarget(original, backup) {
+  const deletePaths = LAUNCHER_FILES.map(name => '/' + name)
+    .filter(p => !backup.names.has(p));
+  return {deletePaths, triggerSha256: original.backup.triggerSha256};
+}
+
+function analyzeRestore({live, expectedFiles, original, progress, deletePaths}) {
+  const out = {problems: [], missing: [], modified: [], unexpected: [], deleted: [],
+    triggerAlreadyRestored: false};
+  const liveMap = new Map(live.entries.map(entry => [entry.path, entry.sha256]));
+  const expectedMap = new Map(expectedFiles.map(entry => [entry.path, entry.sha256]));
+  const deleted = new Set((progress && progress.deleted) || []);
+  const triggerExpected = progress && progress.trigger === 'done'
+    ? original.backup.triggerSha256
+    : expectedMap.get('/' + TRIGGER);
+  const acceptable = new Set([triggerExpected]);
+  if (progress && progress.trigger === 'done') acceptable.add(original.backup.triggerSha256);
+
+  const liveTrigger = liveMap.get('/' + TRIGGER);
+  if (!liveTrigger) {
+    out.missing.push('/' + TRIGGER);
+    out.problems.push('/' + TRIGGER + ' is missing from the live save');
+  } else if (!acceptable.has(liveTrigger)) {
+    out.modified.push('/' + TRIGGER);
+    out.problems.push('/' + TRIGGER + ' matches neither the installed nor the restored trigger');
+  }
+  out.triggerAlreadyRestored = liveTrigger === original.backup.triggerSha256;
+
+  for (const p of deletePaths) {
+    const liveEntry = liveMap.get(p);
+    if (deleted.has(p)) {
+      if (liveEntry) out.problems.push(p + ' was recorded as removed but is still present');
+      else out.deleted.push(p);
+      continue;
+    }
+    if (!liveEntry) {
+      // A crash between a successful delete and its record update leaves the
+      // file absent without progress; while restoring that is already done.
+      if (progress && progress.trigger === 'done') out.deleted.push(p);
+      else {
+        out.missing.push(p);
+        out.problems.push(p + ' is missing from the live save');
+      }
+      continue;
+    }
+    const want = expectedMap.get(p);
+    if (want && liveEntry !== want) {
+      out.modified.push(p);
+      out.problems.push(p + ' was modified after installation (live ' +
+        liveEntry.slice(0, 16) + '… != installed ' + want.slice(0, 16) + '…)');
+    }
+  }
+
+  for (const [p, want] of expectedMap) {
+    if (p === '/' + TRIGGER || deletePaths.includes(p)) continue;
+    const liveEntry = liveMap.get(p);
+    if (!liveEntry) { out.missing.push(p); out.problems.push(p + ' is missing'); }
+    else if (liveEntry !== want) {
+      out.modified.push(p);
+      out.problems.push(p + ' was modified after installation');
+    }
+  }
+
+  for (const p of LAUNCHER_PATHS) {
+    if (expectedMap.has(p) || deletePaths.includes(p)) continue;
+    if (liveMap.has(p)) {
+      out.unexpected.push(p);
+      out.problems.push(p + ' is present but not part of this installation');
+    }
+  }
+  for (const name of UPDATE_FILES) {
+    if (liveMap.has('/' + name)) {
+      out.unexpected.push('/' + name + ' (upstream update file, left alone)');
+    }
+  }
+  return out;
+}
+
+function printRestoreAnalysis(analysis) {
+  console.log('preflight: ' + (analysis.problems.length ? 'REFUSED' : 'ok'));
+  for (const problem of analysis.problems) console.log('  problem: ' + problem);
+  for (const path of analysis.deleted) console.log('  already removed: ' + path);
+  const updates = analysis.unexpected.filter(p => /update file/.test(p));
+  if (updates.length) console.log('  note: ' + updates.join(', '));
+}
+
+// Rollback to the state before the FIRST install. The immutable original record
+// supplies the backup and trigger; transaction records only describe the live
+// state that is allowed to be removed.
+async function restoreFromOriginal({options, title, session, uid, original}) {
+  const problems = receipts.validateOriginal(original, {
     titleId: title.id, uid, commit: UPSTREAM_COMMIT,
     launcherFiles: LAUNCHER_FILES, trigger: TRIGGER,
   });
   if (problems.length) {
-    throw new Failure(EXIT.prereq, 'installation receipt failed validation',
+    throw new Failure(EXIT.prereq, 'the original installation record failed validation',
       problems.map(p => '  ' + p));
   }
-  const backup = await loadBackup(receipt.backup.path, title, {requireIdentity: true, uid});
-  if (backup.manifestSha256 !== receipt.backup.manifestSha256) {
-    throw new Failure(EXIT.prereq, 'the backup at ' + receipt.backup.path +
-      ' changed since installation (manifest hash differs); refusing to restore from it');
+  const backup = await loadBackup(original.backup.path, title, {requireIdentity: true, uid});
+  if (backup.manifestSha256 !== original.backup.manifestSha256) {
+    throw new Failure(EXIT.prereq, 'the original backup at ' + original.backup.path +
+      ' changed since the first install (manifest hash differs); refusing to restore from it');
   }
   const triggerEntry = backup.entries.find(entry => entry.path === '/' + TRIGGER);
-  if (!triggerEntry || triggerEntry.sha256 !== receipt.backup.triggerSha256) {
-    throw new Failure(EXIT.prereq, 'the backup trigger does not match the receipt');
+  if (!triggerEntry || triggerEntry.sha256 !== original.backup.triggerSha256) {
+    throw new Failure(EXIT.prereq, 'the original backup trigger does not match the record');
   }
+  const target = restoreTarget(original, backup);
+  const transactions = await receipts.listTransactions(title.id, uid);
+  const latest = transactions.length ? transactions[transactions.length - 1] : null;
+  const resuming = !!(latest && latest.origin === 'restore' && latest.status === 'restoring');
 
   const runTag = stamp();
-  const preDir = path.join(path.dirname(backup.dir), runTag + '-restore-preflight');
+  const preDir = path.join(savesRoot(), title.slug, 'user-' + uid.slice(0, 8),
+    runTag + '-restore-preflight');
   console.log('reading the live save before touching it (read-only)');
   const live = await pullSnapshot(session, title, uid, preDir, 'preflight');
-  const analysis = analyzeReceiptState({live, receipt, backup, title});
-  printAnalysis(analysis);
+
+  const liveMapNow = new Map(live.entries.map(entry => [entry.path, entry.sha256]));
+  const alreadyRestored = liveMapNow.get('/' + TRIGGER) === original.backup.triggerSha256 &&
+    target.deletePaths.every(p => !liveMapNow.has(p));
+  if (alreadyRestored) {
+    console.log('already at the pre-install state: the original trigger is present and every ' +
+      'file the first install added is absent.');
+    console.log('original baseline kept: ' + receipts.originalPath(title.id, uid));
+    return EXIT.ok;
+  }
+
+  let expectedFiles;
+  let progress;
+  if (resuming) {
+    expectedFiles = latest.restoreFrom;
+    progress = latest.progress;
+    console.log('resuming restore transaction ' + latest.id);
+  } else {
+    const match = candidateStates(original, transactions)
+      .find(state => stateMatchesLive(live, state.files));
+    if (!match) {
+      const rows = candidateStates(original, transactions).map(state => {
+        const map = new Map(live.entries.map(entry => [entry.path, entry.sha256]));
+        return '  ' + state.name + ': ' +
+          state.files.filter(f => map.get(f.path) !== f.sha256).map(f => f.path).join(', ');
+      });
+      throw new Failure(EXIT.conflict,
+        'the live save matches no recorded installation state; refusing to restore',
+        rows.concat(['  (modified files are never deleted)']));
+    }
+    expectedFiles = match.files;
+    progress = {trigger: 'pending', deleted: []};
+  }
+
+  const analysis = analyzeRestore({live, expectedFiles, original, progress,
+    deletePaths: target.deletePaths});
+  printRestoreAnalysis(analysis);
   if (analysis.problems.length) {
     throw new Failure(EXIT.conflict,
-      'refusing to restore: the live save does not match the installation receipt',
+      'refusing to restore: the live save does not match the recorded installation',
       analysis.problems.map(p => '  ' + p));
   }
   if (options['dry-run']) {
     console.log('\ndry run: preflight passed; nothing was changed.');
+    console.log('target: pre-install state from ' + backup.dir +
+      ' (trigger restored, ' + target.deletePaths.length + ' added file(s) removed)');
     return EXIT.ok;
   }
   requireRestoreAuthorization(options);
 
-  if (analysis.triggerAlreadyRestored && receipt.progress.trigger !== 'done') {
-    receipt.progress.trigger = 'done';
+  let tx = resuming ? latest : null;
+  if (!tx) {
+    tx = {
+      version: receipts.VERSION,
+      kind: receipts.KIND_TRANSACTION,
+      id: receipts.transactionId(),
+      status: 'restoring',
+      origin: 'restore',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      title: {id: title.id, name: title.name},
+      account: {uid},
+      upstream: {repo: UPSTREAM_REPO, commit: UPSTREAM_COMMIT, tag: UPSTREAM_TAG},
+      originalSha256: await originalDigest(title, uid),
+      originalPath: receipts.originalPath(title.id, uid),
+      preState: {
+        source: 'pull',
+        dir: path.resolve(live.dir),
+        manifestSha256: live.manifestSha256,
+        entries: live.entries.length,
+        files: live.entries.map(entry => ({path: entry.path, size: entry.size,
+          sha256: entry.sha256})),
+      },
+      restoreFrom: expectedFiles,
+      installed: [],
+      progress: {trigger: 'pending', deleted: []},
+    };
+    await receipts.writeTransaction(tx);
+    console.log('restore transaction: ' + receipts.transactionPath(title.id, uid, tx.id));
   }
-  receipt.status = 'restoring';
-  receipt.updatedAt = new Date().toISOString();
-  await receipts.writeReceipt(receipt);
+  if (analysis.triggerAlreadyRestored && tx.progress.trigger !== 'done') {
+    tx.progress.trigger = 'done';
+  }
+  tx.status = 'restoring';
+  tx.updatedAt = new Date().toISOString();
+  await receipts.writeTransaction(tx);
 
-  if (receipt.progress.trigger !== 'done') {
-    console.log('1/3 restoring ' + TRIGGER + ' from the backup');
+  if (tx.progress.trigger !== 'done') {
+    console.log('1/3 restoring ' + TRIGGER + ' from the original backup');
     const work = await fsp.mkdtemp(path.join(os.tmpdir(), 'artemis-restore-'));
     const bytes = await fsp.readFile(path.join(backup.dir, TRIGGER));
-    const manifest = {
-      purpose: 'restore the pre-install boot trigger for ' + title.name,
+    await fsp.copyFile(path.join(backup.dir, TRIGGER), path.join(work, TRIGGER));
+    await fsp.writeFile(path.join(work, 'manifest.json'), JSON.stringify({
+      purpose: 'restore the original boot trigger for ' + title.name,
       files: [{path: '/' + TRIGGER, local: TRIGGER, size: bytes.length,
         sha256: sha256(bytes), replace: true}],
-    };
-    await fsp.copyFile(path.join(backup.dir, TRIGGER), path.join(work, TRIGGER));
-    await fsp.writeFile(path.join(work, 'manifest.json'),
-      JSON.stringify(manifest, null, 2) + '\n');
+    }, null, 2) + '\n');
     const written = runStep('save-write-stage.cjs',
       [session, title.id, uid, backup.dir, path.join(work, 'manifest.json'),
         '--restore', '--confirm-restore'], {stdio: 'inherit'});
     await fsp.rm(work, {recursive: true, force: true});
     if (written.status !== 0) {
-      receipt.status = 'restore-failed';
-      receipt.error = 'boot trigger restore failed';
-      receipt.updatedAt = new Date().toISOString();
-      await receipts.writeReceipt(receipt);
+      tx.status = 'restore-failed';
+      tx.error = 'boot trigger restore failed';
+      tx.updatedAt = new Date().toISOString();
+      await receipts.writeTransaction(tx);
       throw new Failure(EXIT.verify, 'the boot trigger was not restored');
     }
-    receipt.progress.trigger = 'done';
-    receipt.updatedAt = new Date().toISOString();
-    await receipts.writeReceipt(receipt);
+    tx.progress.trigger = 'done';
+    tx.updatedAt = new Date().toISOString();
+    await receipts.writeTransaction(tx);
   } else {
     console.log('1/3 trigger already restored by an earlier attempt');
   }
 
-  console.log('2/3 removing only the launcher files this installation added');
-  const added = receipt.installed.filter(entry => entry.kind === 'add');
-  for (const entry of added) {
-    if (receipt.progress.deleted.includes(entry.path)) continue;
-    const deleted = runStep('save-delete-root.cjs',
-      [session, title.id, uid, entry.path]);
+  console.log('2/3 removing only the launcher files the first install added');
+  for (const path of target.deletePaths) {
+    if (tx.progress.deleted.includes(path)) continue;
+    const deleted = runStep('save-delete-root.cjs', [session, title.id, uid, path]);
     if (!isGone(deleted.status)) {
-      receipt.status = 'restore-failed';
-      receipt.error = 'could not remove ' + entry.path + ' (exit ' + deleted.status + ')';
-      receipt.updatedAt = new Date().toISOString();
-      await receipts.writeReceipt(receipt);
-      throw new Failure(EXIT.verify, 'could not remove ' + entry.path +
-        ' (exit ' + deleted.status + '); the trigger is restored, so the game boots normally. ' +
-        'Re-run restore to resume; files already removed are skipped.');
+      tx.status = 'restore-failed';
+      tx.error = 'could not remove ' + path + ' (exit ' + deleted.status + ')';
+      tx.updatedAt = new Date().toISOString();
+      await receipts.writeTransaction(tx);
+      throw new Failure(EXIT.verify, 'could not remove ' + path +
+        ' (exit ' + deleted.status + '); the trigger is restored, the game boots normally. ' +
+        'Re-run restore to resume.');
     }
-    if (deleted.status === DELETE_EXIT.notFound) {
-      console.log('  ' + entry.path + ' was already absent');
-    }
-    receipt.progress.deleted.push(entry.path);
-    receipt.updatedAt = new Date().toISOString();
-    await receipts.writeReceipt(receipt);
+    if (deleted.status === DELETE_EXIT.notFound) console.log('  ' + path + ' was already absent');
+    tx.progress.deleted.push(path);
+    tx.updatedAt = new Date().toISOString();
+    await receipts.writeTransaction(tx);
   }
 
   console.log('3/3 verifying the restored save');
-  const postDir = path.join(path.dirname(backup.dir), runTag + '-restore-verify');
+  const postDir = path.join(savesRoot(), title.slug, 'user-' + uid.slice(0, 8),
+    runTag + '-restore-verify');
   const post = await pullSnapshot(session, title, uid, postDir, 'post-restore');
-  const failures = postRestoreProblems({post, receipt, backup});
-  for (const name of UPDATE_FILES) {
-    if (post.entries.some(entry => entry.path === '/' + name)) {
-      console.log('note: /' + name + ' is present; it is an update file, not ours, left alone');
-    }
-  }
+  const failures = postRestoreProblems({
+    post,
+    receipt: {backup: {triggerSha256: original.backup.triggerSha256},
+      installed: target.deletePaths.map(path => ({path, kind: 'add'}))},
+    backup,
+  });
   if (failures.length) {
-    receipt.status = 'restore-failed';
-    receipt.error = failures.join('; ');
-    receipt.updatedAt = new Date().toISOString();
-    await receipts.writeReceipt(receipt);
+    tx.status = 'restore-failed';
+    tx.error = failures.join('; ');
+    tx.updatedAt = new Date().toISOString();
+    await receipts.writeTransaction(tx);
     throw new Failure(EXIT.verify, 'post-restore verification failed',
       failures.map(f => '  ' + f));
   }
-  receipt.status = 'restored';
-  receipt.updatedAt = new Date().toISOString();
-  receipt.restoredAt = receipt.updatedAt;
-  await receipts.writeReceipt(receipt);
-  console.log('restored and verified: trigger matches the backup; ' +
-    added.length + ' launcher file(s) removed.');
+  tx.status = 'restored';
+  tx.updatedAt = new Date().toISOString();
+  tx.restoredAt = tx.updatedAt;
+  await receipts.writeTransaction(tx);
+  console.log('restored and verified: trigger matches the original backup; ' +
+    target.deletePaths.length + ' launcher file(s) removed.');
+  console.log('original baseline kept: ' + receipts.originalPath(title.id, uid));
   return EXIT.ok;
 }
 
-// Installs made before receipts existed. Ownership is established by content:
-// every live launcher file must equal the pinned upstream bytes, and the live
-// trigger must equal the deterministic retarget of this backup. Anything else is
-// reported and refused. No receipt is fabricated; the restore is idempotent so
-// an interrupted run can simply be repeated.
+// Installs made before records existed, with no original baseline. Ownership is
+// established from pinned content only (never from a fabricated record).
 async function restoreLegacy({options, title, session, uid, backup}) {
   if (!options['adopt-legacy']) {
     throw new Failure(EXIT.usage,
-      'no installation receipt exists for this save. Automatic cleanup is refused ' +
-      'because a receipt is what records which files this installer wrote. ' +
-      'If you know this installation is ours, re-run with --adopt-legacy: live ' +
-      'launcher bytes must then match the pinned upstream release exactly.', [
-      '  receipt: ' + receipts.receiptPath(title.id, uid),
-      '  (installs made with the first version of this tool have no receipt)',
+      'no original installation record exists for this save. Automatic cleanup is refused ' +
+      'because nothing records which files this installer wrote. Run migrate-legacy first, ' +
+      'or pass --adopt-legacy to establish ownership from the pinned release.', [
+      '  record: ' + receipts.originalPath(title.id, uid),
+      '  migration: node tools/artemis-launcher.cjs migrate-legacy --title ' + title.id +
+        ' --uid ' + uid + ' --backup <original-backup> --snapshot <installed-snapshot>',
     ]);
   }
   if (!backup.identity) {
     throw new Failure(EXIT.prereq, 'backup does not record the full program id and account uid; ' +
-      'identity cannot be established, so a destructive cleanup is refused. Pull a new ' +
-      'backup with the current save-pull-root.cjs and re-install to create a receipt.');
+      'identity cannot be established, so a destructive cleanup is refused');
   }
-
   const work = await fsp.mkdtemp(path.join(os.tmpdir(), 'artemis-legacy-'));
   const expected = path.join(work, TRIGGER);
   await retargetSave(path.join(backup.dir, TRIGGER), expected);
@@ -929,28 +1309,24 @@ async function restoreLegacy({options, title, session, uid, backup}) {
 
   const runTag = stamp();
   const preDir = path.join(path.dirname(backup.dir), runTag + '-legacy-preflight');
-  console.log('legacy installation (no receipt): reading the live save read-only');
+  console.log('legacy installation (no record): reading the live save read-only');
   const live = await pullSnapshot(session, title, uid, preDir, 'preflight');
   const liveMap = new Map(live.entries.map(entry => [entry.path, entry]));
   const pinned = expectedHashes(title);
   const problems = [];
   const liveTrigger = liveMap.get('/' + TRIGGER);
-  const triggerDone = liveTrigger && liveTrigger.sha256 === backup.entries.find(
-    e => e.path === '/' + TRIGGER).sha256;
+  const originalTrigger = backup.entries.find(e => e.path === '/' + TRIGGER).sha256;
+  const triggerDone = liveTrigger && liveTrigger.sha256 === originalTrigger;
   const triggerOurs = liveTrigger && liveTrigger.sha256 === expectedTrigger;
   if (!triggerDone && !triggerOurs) {
-    problems.push('/' + TRIGGER + ' matches neither the backup nor the deterministic ' +
-      'retarget of it');
+    problems.push('/' + TRIGGER + ' matches neither the original backup nor the ' +
+      'deterministic retarget of it');
   }
   for (const [p, want] of Object.entries(pinned)) {
     const entry = liveMap.get(p);
-    if (!entry) continue; // already removed by an interrupted restore
-    if (entry.sha256 !== want) {
-      problems.push(p + ' differs from the pinned upstream release; not deleting it');
-    }
+    if (entry && entry.sha256 !== want) problems.push(p + ' differs from the pinned release');
   }
-  printAnalysis({problems, missing: [], modified: [], unexpected: [], updates: [],
-    deleted: [], trigger: liveTrigger && liveTrigger.sha256});
+  printRestoreAnalysis({problems, missing: [], modified: [], unexpected: [], deleted: []});
   if (problems.length) {
     throw new Failure(EXIT.conflict, 'refusing the legacy cleanup: ownership is not established',
       problems.map(p => '  ' + p));
@@ -960,9 +1336,8 @@ async function restoreLegacy({options, title, session, uid, backup}) {
     return EXIT.ok;
   }
   requireRestoreAuthorization(options);
-
   if (!triggerDone) {
-    console.log('1/3 restoring ' + TRIGGER + ' from the backup');
+    console.log('1/3 restoring ' + TRIGGER + ' from the original backup');
     const stage = await fsp.mkdtemp(path.join(os.tmpdir(), 'artemis-legacy-restore-'));
     const bytes = await fsp.readFile(path.join(backup.dir, TRIGGER));
     await fsp.copyFile(path.join(backup.dir, TRIGGER), path.join(stage, TRIGGER));
@@ -979,7 +1354,6 @@ async function restoreLegacy({options, title, session, uid, backup}) {
   } else {
     console.log('1/3 trigger already restored');
   }
-
   console.log('2/3 removing the pinned launcher files');
   const removed = [];
   for (const name of LAUNCHER_FILES) {
@@ -992,14 +1366,13 @@ async function restoreLegacy({options, title, session, uid, backup}) {
     }
     removed.push(p);
   }
-
   console.log('3/3 verifying the restored save');
   const postDir = path.join(path.dirname(backup.dir), runTag + '-legacy-verify');
   const post = await pullSnapshot(session, title, uid, postDir, 'post-restore');
   const postMap = new Map(post.entries.map(entry => [entry.path, entry]));
   const failures = [];
   const postTrigger = postMap.get('/' + TRIGGER);
-  if (!postTrigger || postTrigger.sha256 !== backup.entries.find(e => e.path === '/' + TRIGGER).sha256) {
+  if (!postTrigger || postTrigger.sha256 !== originalTrigger) {
     failures.push(TRIGGER + ' does not match the backup after restore');
   }
   for (const p of removed) if (postMap.has(p)) failures.push(p + ' is still present');
@@ -1008,7 +1381,7 @@ async function restoreLegacy({options, title, session, uid, backup}) {
       failures.map(f => '  ' + f));
   }
   console.log('legacy restore verified: ' + TRIGGER + ' matches the backup; ' +
-    removed.length + ' launcher file(s) removed; no receipt was created.');
+    removed.length + ' launcher file(s) removed; no record was created.');
   return EXIT.ok;
 }
 
@@ -1017,32 +1390,162 @@ async function restore(options) {
   const session = path.resolve(options._[0] || '');
   if (!options._[0]) throw new Failure(EXIT.usage, 'restore needs a run directory');
   const uid = await uidForRestore(options, title);
-
-  let receipt = null;
-  try {
-    receipt = await receipts.readReceipt(title.id, uid);
-  } catch (error) {
-    throw new Failure(EXIT.prereq, error.message);
-  }
-
-  if (receipt) {
-    if (options.backup && path.resolve(options.backup) !== path.resolve(receipt.backup.path)) {
-      throw new Failure(EXIT.prereq, '--backup ' + path.resolve(options.backup) +
-        ' is not the backup this installation was made from (' +
-        path.resolve(receipt.backup.path) + '); refusing to mix them');
+  const original = await ensureOriginal(title, uid);
+  if (original) {
+    if (options.backup && path.resolve(options.backup) !== path.resolve(original.backup.path)) {
+      throw new Failure(EXIT.prereq, '--backup is not the original rollback baseline (' +
+        path.resolve(original.backup.path) + '); refusing to substitute a later snapshot');
     }
-    console.log('using the installation receipt: ' + receipts.receiptPath(title.id, uid));
-    return restoreFromReceipt({options, title, session, uid, receipt});
+    return restoreFromOriginal({options, title, session, uid, original});
   }
-
   const backupDir = options.backup
     ? path.resolve(options.backup)
     : (await receiptsForTitle(title.id))[0]?.backup?.path;
   if (!backupDir) {
-    throw new Failure(EXIT.prereq, 'a backup directory is required (--backup); no receipt exists');
+    throw new Failure(EXIT.prereq, 'a backup directory is required (--backup); no record exists');
   }
   const backup = await loadBackup(backupDir, title, {requireIdentity: true, uid});
   return restoreLegacy({options, title, session, uid, backup});
+}
+
+// ------------------------------------------------------------------ migration --
+// A pre-receipt installation can be adopted without inventing data: the
+// original backup supplies the rollback state, a read-only snapshot supplies
+// the installed bytes, and identity comes from a full-uid snapshot or the
+// local config. The original backup is never modified.
+// Pure provenance check for legacy migration, so it can be tested without a
+// console or real upstream bytes.
+function buildMigrationRecord({title, uid, originalBackup, snapshot, pinned,
+  expectedTrigger, identityEvidence, now = new Date().toISOString()}) {
+  const problems = [];
+  if (!identityEvidence || !identityEvidence.length) {
+    problems.push('no independently verified account identity evidence');
+  }
+  const triggerOriginal = originalBackup.entries.find(e => e.path === '/' + TRIGGER);
+  if (!triggerOriginal) problems.push('original backup has no boot trigger');
+  for (const [p, want] of Object.entries(pinned)) {
+    const entry = snapshot.entries.find(e => e.path === p);
+    if (!entry) problems.push('installed snapshot is missing ' + p);
+    else if (entry.sha256 !== want) problems.push(p + ' does not match the pinned release');
+  }
+  const triggerEntry = snapshot.entries.find(e => e.path === '/' + TRIGGER);
+  if (!triggerEntry) problems.push('installed snapshot is missing the boot trigger');
+  else if (triggerEntry.sha256 !== expectedTrigger) {
+    problems.push('the installed trigger is not the deterministic retarget of the original backup');
+  }
+  if (problems.length) return {problems};
+  const installed = LAUNCHER_FILES.map(name => {
+    const entry = snapshot.entries.find(e => e.path === '/' + name);
+    return {path: '/' + name, sha256: entry.sha256, size: entry.size, kind: 'add'};
+  });
+  installed.push({path: '/' + TRIGGER, sha256: triggerEntry.sha256, size: triggerEntry.size,
+    kind: 'replace', originalSha256: triggerOriginal.sha256,
+    originalSize: triggerOriginal.size});
+  return {problems: [], record: {
+    version: receipts.VERSION,
+    kind: receipts.KIND_ORIGINAL,
+    status: 'original',
+    origin: 'migrated-legacy',
+    createdAt: now,
+    updatedAt: now,
+    title: {id: title.id, name: title.name},
+    account: {uid},
+    upstream: {repo: UPSTREAM_REPO, commit: UPSTREAM_COMMIT, tag: UPSTREAM_TAG},
+    backup: {
+      path: path.resolve(originalBackup.dir),
+      manifestSha256: originalBackup.manifestSha256,
+      entries: originalBackup.entries.length,
+      bytes: originalBackup.bytes,
+      triggerSha256: triggerOriginal.sha256,
+      identity: {programId: title.id, uid},
+      identitySource: identityEvidence.join('+'),
+      originalHadIdentity: false,
+    },
+    installed,
+    attestation: {
+      kind: 'ns2-savekit/artemis-launcher-migration',
+      migratedAt: now,
+      originalBackup: {
+        path: path.resolve(originalBackup.dir),
+        manifestSha256: originalBackup.manifestSha256,
+        triggerSha256: triggerOriginal.sha256,
+        identityRecorded: false,
+      },
+      installedSnapshot: {
+        manifestSha256: snapshot.manifestSha256,
+        entries: snapshot.entries.length,
+        identityRecorded: false,
+      },
+      identityEvidence,
+      pinnedUpstream: UPSTREAM_COMMIT,
+      triggerTransformation: 'artemis-save.py launch <original save9999.dat> inject.iet',
+      verifiedTriggerSha256: expectedTrigger,
+      note: 'The original backup is referenced, not modified. No post-install snapshot is used ' +
+        'as the rollback baseline.',
+    },
+  }};
+}
+
+async function migrateLegacy(options) {
+  const title = titleFor(options.title);
+  const uid = uidFor(options, title);
+  if (!options['confirm-migration']) {
+    throw new Failure(EXIT.usage,
+      'migrate-legacy writes an immutable local record; pass --confirm-migration');
+  }
+  if (await receipts.readOriginal(title.id, uid)) {
+    throw new Failure(EXIT.prereq, 'an original record already exists for this title/account; ' +
+      'migration is only for pre-record installs');
+  }
+  if (!options.backup) throw new Failure(EXIT.usage, 'migrate-legacy needs --backup (the original)');
+  const originalBackup = await loadBackup(options.backup, title, {requireIdentity: false});
+  if (originalBackup.identity) {
+    throw new Failure(EXIT.prereq, 'this backup already carries full identity; run install ' +
+      'instead of migration');
+  }
+  let snapshot;
+  if (options._[0]) {
+    const dir = path.join(savesRoot(), title.slug, 'user-' + uid.slice(0, 8),
+      stamp() + '-migration-snapshot');
+    console.log('reading the installed save once (read-only)');
+    snapshot = await pullSnapshot(path.resolve(options._[0]), title, uid, dir, 'migration');
+  } else if (options.snapshot) {
+    snapshot = await loadBackup(options.snapshot, title, {requireIdentity: false});
+    if (snapshot.identity && snapshot.identity.uid !== uid) {
+      throw new Failure(EXIT.prereq, 'snapshot is for a different account');
+    }
+  } else {
+    throw new Failure(EXIT.prereq,
+      'migration needs a read-only snapshot of the installed save: pass a run directory ' +
+      'or --snapshot <pull>');
+  }
+  const identity = [];
+  if (snapshot.identity && snapshot.identity.uid === uid) identity.push('live snapshot');
+  try {
+    const config = JSON.parse(await fsp.readFile(path.join(REPO, 'config/uids.json'), 'utf8'));
+    if (normalizeUid(config[title.id]) === uid) identity.push('config/uids.json');
+  } catch { /* no local config */ }
+
+  const work = await fsp.mkdtemp(path.join(os.tmpdir(), 'artemis-migrate-'));
+  const expectedTriggerFile = path.join(work, TRIGGER);
+  await retargetSave(path.join(originalBackup.dir, TRIGGER), expectedTriggerFile);
+  const expectedTrigger = await fileSha(expectedTriggerFile);
+  await fsp.rm(work, {recursive: true, force: true});
+
+  const built = buildMigrationRecord({title, uid, originalBackup, snapshot,
+    pinned: expectedHashes(title), expectedTrigger, identityEvidence: identity});
+  if (built.problems.length) {
+    throw new Failure(EXIT.prereq, 'migration refuses: provenance is not established',
+      built.problems.map(p => '  ' + p));
+  }
+  const file = await receipts.writeImmutable(receipts.originalPath(title.id, uid), built.record);
+  console.log('migration attestation written: ' + file);
+  console.log('rollback baseline: ' + path.resolve(originalBackup.dir) +
+    ' (pre-install, unchanged)');
+  console.log('identity evidence: ' + identity.join(', '));
+  console.log('installed payload verified against pinned ' + UPSTREAM_COMMIT.slice(0, 12) +
+    ' and the deterministic trigger transformation.');
+  return EXIT.ok;
 }
 
 // -------------------------------------------------------------------- verify --
@@ -1083,6 +1586,7 @@ async function main() {
     case 'install': return install(options);
     case 'verify': return verify(options);
     case 'restore': return restore(options);
+    case 'migrate-legacy': return migrateLegacy(options);
     default:
       throw new Failure(EXIT.usage, 'usage: artemis-launcher.cjs <stage|plan|install|verify|restore> ...');
   }
@@ -1107,6 +1611,8 @@ if (require.main === module) {
 module.exports = {
   EXIT, Failure, TITLES, UPSTREAM_COMMIT, UPSTREAM_FILES, LAUNCHER_FILES, TRIGGER,
   UPDATE_FILES, parseArgs, titleFor, pinnedFor, expectedHashes, verifyUpstream,
-  buildManifest, writeManifest, analyzeReceiptState, postRestoreProblems, makeReceipt,
+  buildManifest, writeManifest, analyzeReceiptState, analyzeRestore, postRestoreProblems,
+  candidateStates, restoreTarget, stateMatchesLive, preinstallProblems, installedEntries,
+  originalRecord, transactionRecord, buildMigrationRecord, verifyLegacyStaging,
   loadBackup, stageDirFor, stageTo, stageAndPlan,
 };

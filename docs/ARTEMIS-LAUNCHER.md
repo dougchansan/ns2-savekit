@@ -154,7 +154,11 @@ Rebuilding the payload never deletes an arbitrary directory:
 - a failed build discards only that sibling. The previous staged payload and its
   manifest are left byte-for-byte intact;
 - symlinked targets and symlinked parents that escape the allowed roots are
-  refused.
+  refused;
+- an unmarked staging directory from an older version is adopted only if it
+  contains exactly the expected files, every launcher file matches the pinned
+  release and the trigger parses as our retarget. Adoption writes the marker;
+  it never deletes or overwrites unrelated content.
 
 ## Backup integrity
 
@@ -175,28 +179,49 @@ The truncated `uid=...` in the human-readable `archive` line is **not** identity
 two accounts can share that prefix. A legacy backup without full identity is
 refused for install/verify/restore with a message to pull a new backup.
 
-## Installation receipts
+## Original baseline and update records
 
 A backup proves the "before" state. It does not prove that a file now on the
 console was written by this installer - the user may have edited a launcher
-script, or a second installation may be present. The installer therefore writes
-a receipt **before** the console transaction:
+script, or a second installation may be present. There are two record kinds,
+kept apart on purpose:
 
-- location: `~/.local/state/ns2-savekit/artemis-launcher/receipts/` (mode 0700,
-  files 0600), override with `ARTEMIS_STATE`. It is local, gitignored by
-  construction and never committed; it contains the full account uid;
-- filename: `<title-id>-<sha256(title:uid)[0:16]>.json`, so a listing does not
-  expose the account id;
-- contents: title id/name, full account uid, backup path + manifest SHA-256 +
-  entry count + trigger SHA-256 + archive identity, pinned upstream commit,
-  every installed path with its SHA-256 and size, `kind: add|replace`, the
-  original SHA-256/size for the replaced trigger, install status, timestamps,
-  and restore progress (`trigger`, `deleted[]`);
-- statuses: `installing`, `installed`, `install-failed`, `restoring`,
-  `restored`, `restore-failed`.
+- **original** - the state before the *first* Artemis install. Written once with
+  an atomic create-if-absent (`link`), never replaced. It is the rollback
+  baseline: backup path + manifest SHA-256 + trigger SHA-256 + identity, the
+  installed file list with `add|replace` and original hashes, and timestamps.
+- **transaction** - one install/update/restore attempt. A reinstall writes a new
+  transaction; it never touches the original. It records the pre-state snapshot,
+  the expected installed files, a link to the original (`originalSha256`) and
+  restore progress (`trigger`, `deleted[]`).
 
-The receipt is updated after each destructive step, so an interrupted restore
-can be resumed and files already removed are skipped.
+Location (0700, files 0600, override `ARTEMIS_STATE`; never committed, contains
+the full account uid):
+
+```
+~/.local/state/ns2-savekit/artemis-launcher/receipts/
+  <title-id>-<sha256(title:uid)[0:16]>.original.json
+  <title-id>-<sha256(title:uid)[0:16]>.transactions/<timestamp>-<rand>.json
+  <title-id>-<sha256(title:uid)[0:16]>.json          # first design, read-only
+```
+
+A receipt written by the first version of this tool is adopted into the new
+original record (copied, not re-derived) the first time the new code sees it.
+
+### First install, reinstall and updates
+
+- The **first install** validates that its backup does not already contain the
+  pinned launcher (a post-install snapshot is refused as a baseline), writes the
+  immutable original record, then performs the console transaction. If the
+  console write is interrupted, the baseline still describes the true pre-install
+  state and a retry completes the install.
+- A **reinstall** pulls the live save read-only and stages against it. If every
+  staged file already matches the live save, it verifies and stops: no write, no
+  transaction, original unchanged. Otherwise it writes a transaction, performs
+  one commit, and records success or `install-failed`. The original is never
+  rewritten, so rollback still targets the pre-first-install state.
+- A failed update leaves the original baseline and its backup intact; the
+  transaction records the failure.
 
 ## Conflicts
 
@@ -235,53 +260,75 @@ six files were added, one was replaced, and **289 files were byte-identical**.
 
 ## Rollback
 
-Restore is receipt-driven. It first reads the live save (read-only) and compares
-every installed path with the receipt:
+Restore always targets the state before the **first** install, using the
+immutable original record (not the latest post-install snapshot). It first reads
+the live save (read-only) and compares it with every recorded state:
 
 ```sh
 # preflight only: pull, compare, print the plan, change nothing
-node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <32-hex> \
-  --confirm-restore --dry-run
+node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <32-hex>   --confirm-restore --dry-run
 
 # perform it
-node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <32-hex> \
-  --confirm-restore
+node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <32-hex>   --confirm-restore
 ```
 
-Order of operations: validate the receipt and backup; pull the live save;
-refuse if any installed file changed, is missing, or if an unowned launcher file
-appears; mark the receipt `restoring`; write the backup's `save9999.dat`; delete
-only the receipt's `add` files; pull again and check the trigger equals the
-backup and every added file is gone; mark the receipt `restored`.
+Order of operations: validate the original record and its backup; pull the live
+save; find the recorded state it matches (original install, any transaction's
+post-state or pre-state); refuse if a launcher file was modified, is missing, or
+an unowned launcher file appears; mark a restore transaction `restoring`; write
+the original backup's `save9999.dat`; delete only the files the first install
+added; pull again and check the trigger equals the original backup and every
+added file is gone; mark the transaction `restored`.
 
-If a deletion fails, the trigger is already restored (the game boots normally),
-the receipt records `restore-failed`, and re-running resumes: removed files are
-skipped, and the preflight verifies what is left. `save-delete-root` now exits
-non-zero when `DeleteFile` fails, reopens the file read-only and checks the root
-listing to prove it is absent; a
-missing file exits `10`, which restore treats as already done.
+If a launcher file was edited after installation, restore reports `modified` and
+does not delete it. If a deletion fails, the trigger is already restored (the
+game boots normally), the transaction records `restore-failed`, and re-running
+resumes: removed files are skipped and the preflight verifies what is left.
 
-`--uid` may be omitted when exactly one receipt exists for the title; the
-account is read from it. If `--backup` is passed it must be the backup the
-receipt was made from.
+`save-delete-root` exits non-zero when `DeleteFile` fails, reopens the file
+read-only and checks the root listing to prove it is absent; a missing file exits
+`10`, which restore treats as already done. The canonical FS result for "not
+found" is `0x202` (module 1, description 2, the same value
+`save-write-stage.cjs` checks); a bare `0x2` is an unknown result and fails
+closed.
 
-### Installs made before receipts (legacy)
+`--uid` may be omitted when exactly one record exists for the title. If
+`--backup` is passed it must be the original baseline's backup: a later snapshot
+is refused rather than substituted.
 
-An installation made with the first version of this tool has no receipt. Restore
-refuses to delete anything automatically, because there is nothing that records
-which files this installer wrote. The conservative path requires
-`--adopt-legacy`, and then establishes ownership by **content**, not by a
-fabricated receipt:
+### Installs made before records (legacy migration)
 
-- the backup must carry full identity;
-- the live `save9999.dat` must match either the backup's trigger or the
-  deterministic retarget of it;
-- every live launcher file must equal the pinned upstream bytes for that title
-  (`core.lua` from the matching overlay, the rest from `common/`).
+An installation made before the record system has no original baseline. Adopt it
+conservatively instead of inventing one:
 
-Anything else is reported and the restore is refused. The legacy restore is
-idempotent, so an interrupted run is resumed by re-running it. No receipt is
-written. Installs made by the current tool always have one.
+```sh
+node tools/artemis-launcher.cjs migrate-legacy \
+  --title 010042d022aea000 --uid <32-hex> \
+  --backup <pre-install backup> \
+  --snapshot <read-only pull of the installed save> \  # or pass a run directory
+  --confirm-migration
+```
+
+`migrate-legacy`:
+
+1. validates the original backup (sizes, SHA-256, trigger);
+2. verifies the installed payload against the pinned upstream files;
+3. verifies the installed trigger equals the deterministic retarget of the
+   original backup's trigger;
+4. establishes the full uid from independently verified evidence - an
+   identity-bearing live pull, or the local `config/uids.json` entry - and never
+   from the truncated `uid=` label;
+5. writes an immutable original record plus a migration attestation that names
+   the evidence, and leaves the original backup byte-for-byte untouched.
+
+It refuses if the snapshot is missing a launcher file, differs from the pinned
+release, has the wrong trigger, or if identity cannot be established. No
+destructive operation runs during migration.
+
+Without a record, `restore` refuses automatic cleanup. The only fallback is
+`--adopt-legacy`, which independently establishes ownership by requiring every
+live launcher file to equal the pinned release and the live trigger to match the
+deterministic retarget; anything else is refused. It writes no record.
 
 ## Temporary hardware-test files
 
@@ -374,7 +421,7 @@ mount was above the fallback threshold, so that path was not the cause. The
 console was restored to the HOME menu by a power cycle after each wedged
 attempt; no save operation was issued in any of them, so nothing on the console
 changed. Validation for the new destructive paths is therefore **offline only**
-(33 installer tests + 11 delete-result tests). Still to prove on hardware: a
+(36 installer tests + 11 delete-result tests). Still to prove on hardware: a
 fresh identity-bearing pull feeding a receipt; receipt-driven restore
 preflight/`--dry-run`; refusal of a modified launcher file; `save-delete-root`
 propagation; and the post-rollback pull.
