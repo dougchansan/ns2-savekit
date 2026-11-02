@@ -413,7 +413,7 @@ async function stageTo({title, upstream, backup, outDir, retarget = retargetSave
 // Manifest `local` paths are relative to the manifest's directory. save-write-
 // stage is run with cwd = the staging directory, so the manifest stays portable
 // and does not capture a machine-specific absolute path.
-async function buildManifest({title, outDir, backup}) {
+async function buildManifest({title, outDir, backup, expected = expectedHashes(title)}) {
   const names = (await fsp.readdir(outDir))
     .filter(name => name !== 'manifest.json' && !name.startsWith('.'))
     .sort();
@@ -424,9 +424,15 @@ async function buildManifest({title, outDir, backup}) {
     const bytes = await fsp.readFile(local);
     const replace = backup.names.has('/' + name);
     if (replace && name !== TRIGGER) {
-      conflicts.push({name: '/' + name,
-        reason: 'already exists in this save and is not the boot trigger'});
-      continue;
+      // Re-installing over a previous install is allowed only when the live
+      // bytes are exactly the pinned release: then the file is ours, not a
+      // user's edited script. Anything else is a conflict.
+      const before = backup.entries.find(entry => entry.path === '/' + name);
+      if (!before || before.sha256 !== expected['/' + name]) {
+        conflicts.push({name: '/' + name,
+          reason: 'already exists in this save with bytes that are not the pinned release'});
+        continue;
+      }
     }
     files.push({path: '/' + name, local: name, size: bytes.length,
       sha256: sha256(bytes), replace});

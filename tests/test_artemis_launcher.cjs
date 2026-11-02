@@ -91,7 +91,7 @@ function upstreamFixture() {
 // programId/uid fields; without them it is a legacy backup.
 function backupFixture({identity = true, partial = false, failed = [], extra = [],
   trigger = true, titleId = TITLE, uid = UID, corrupt = false, mutate,
-  realTrigger = false} = {}) {
+  realTrigger = false, contents = {}} = {}) {
   const dir = tmp('artemis-backup-');
   const entries = [];
   const add = (name, bytes) => {
@@ -103,6 +103,7 @@ function backupFixture({identity = true, partial = false, failed = [], extra = [
   if (trigger) add('save9999.dat', realTrigger ? bowsFixture() : Buffer.from('game suspend save'));
   for (const name of ['ns2jb.asb', 'ns2jb.lua', 'ssedit1.lua', 'sed01.asb']) add(name, 'x' + name);
   for (const name of extra) add(name, 'editor ' + name);
+  for (const [name, bytes] of Object.entries(contents)) add(name, bytes);
   if (corrupt) fs.writeFileSync(path.join(dir, 'system.dat'), 'corrupt');
   const manifest = {
     archive: 'space=User type=Account rank=0 index=0 uid=' + String(uid).slice(0, 16),
@@ -462,6 +463,28 @@ async function run() {
   });
 
   // ------------------------------------------------------- editor/ns2jb compat --
+  await test('a re-install over the same pinned bytes is a replace, not a conflict', async () => {
+    const upstream = upstreamFixture();
+    const out = path.join(tmp('artemis-repeat-'), 'payload');
+    const first = await launcher.stageTo({title: TITLE_OBJ(), upstream, backup:
+      await loadValid(backupFixture()), outDir: out,
+      retarget: (input, output) => fs.copyFileSync(input, output)});
+    const staged = {};
+    for (const name of launcher.LAUNCHER_FILES) staged[name] = fs.readFileSync(path.join(first.build, name));
+    const expected = {};
+    for (const [name, bytes] of Object.entries(staged)) expected['/' + name] = sha(bytes);
+    const backup2 = await loadValid(backupFixture({contents: staged}));
+    const plan = await launcher.buildManifest({title: TITLE_OBJ(), outDir: first.build,
+      backup: backup2, expected});
+    assert.deepStrictEqual(plan.conflicts, []);
+    assert.deepStrictEqual(plan.files.filter(f => f.replace).length, 7);
+    const wrong = {...expected, '/core.lua': sha(Buffer.from('not the pinned core'))};
+    const conflict = await launcher.buildManifest({title: TITLE_OBJ(), outDir: first.build,
+      backup: backup2, expected: wrong});
+    assert.deepStrictEqual(conflict.conflicts.map(c => c.name), ['/core.lua']);
+    assert.ok(!conflict.files.some(f => f.path === '/core.lua'));
+  });
+
   await test('editor and ns2jb files in the backup are untouched by the plan', async () => {
     const backup = await loadValid(backupFixture({extra: ['sscode004.lua']}));
     const out = path.join(tmp('artemis-compat-'), 'payload');
