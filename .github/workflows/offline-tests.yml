@@ -1,0 +1,35 @@
+name: offline tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'feature/**']
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Lua 5.4
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - name: Python tests
+        run: python3 tests/test_offline.py
+      - name: Node tests
+        run: |
+          set -e
+          for test in tests/test_*.cjs; do
+            echo "== $test"
+            node "$test"
+          done
+      - name: Lua tests
+        run: |
+          lua5.4 tests/test_payload_lua.lua
+          lua5.4 tests/test_metadata_lua.lua
+      - name: Shell test
+        run: sh tests/test_inject_dryrun.sh

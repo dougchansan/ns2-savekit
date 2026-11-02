@@ -602,9 +602,44 @@ async function replaceFromDirectory(session, title, uid, backup) {
   await writeFiles(session, title, uid, backup, manifest);
 }
 
+// alula's upstream launcher. Separate from installLauncher() above on purpose:
+// that one writes our ns2jb payload, this one writes the upstream Artemis
+// Launcher, and both take save9999.dat. The installer does the staging, the
+// conflict check and the pull-after-write verification itself; the kit only
+// takes the backup, shows the plan and asks for the write authorization.
+async function installAlula(session, title, uid, backup) {
+  if (!ALULA_TITLES.has(title)) {
+    console.log('alula Artemis Launcher does not support ' + title + ' (demo titles only)');
+    return;
+  }
+  if (!backup) {
+    console.log('No backup yet: pulling one now; the launcher is built from it.');
+    backup = await doBackup(session, title, uid);
+    if (!backup) return;
+  }
+  const args = ['install', session, '--title', title, '--uid', uid, '--backup', backup];
+  echoCommand('node tools/artemis-launcher.cjs ' + args.map(quote).join(' ') + ' --dry-run');
+  const plan = run('artemis-launcher.cjs', [...args, '--dry-run'], {stdio: 'inherit'});
+  if (!plan.ok) {
+    console.log('\nplan failed - nothing was written');
+    return;
+  }
+  if (!(await confirm('Proceed? This commits one transaction'))) return;
+  echoCommand('node tools/artemis-launcher.cjs ' + args.map(quote).join(' ') + ' --confirm');
+  const result = run('artemis-launcher.cjs', [...args, '--confirm'], {stdio: 'inherit'});
+  console.log(result.ok ? '\ninstalled and verified' :
+    '\ninstall failed - see the message above; the backup is intact');
+  saveOpDone();
+}
+
 // Artemis saves are recognised by their own file names, which the listing has
 // already shown once: system.dat/saveg.dat (BOWX/BOWG) plus the slot files.
 const ARTEMIS_FILES = /\/(system\.dat|saveg\.dat|save[0-9]{4}\.dat)$/im;
+
+// alula's upstream launcher supports these two demo titles only; its README says
+// the full games are not supported. Keep this identical to
+// tools/artemis-launcher.cjs, which refuses anything else before it writes.
+const ALULA_TITLES = new Set(['010042d022aea000', '010012900d38a000']);
 
 // 'all' only makes sense for a backup. Any other action needs one account, so it
 // resolves to the first account that actually has a save - never to the literal
@@ -669,6 +704,13 @@ async function titleLoop(session, title, uid) {
       {label: 'Delete a file (optional)                     [save op]', value: 'delete'},
       {label: 'Verify: compare the save with what we wrote  [save op]', value: 'verify'},
       {label: 'Back to the title list', value: 'back'});
+    if (ALULA_TITLES.has(title)) {
+      // A separate installer, not a replacement for option 4: option 4 writes
+      // this repository's ns2jb launcher, this writes alula's Artemis Launcher.
+      // Both own save9999.dat, so they are alternatives, not a pair.
+      items.splice(items.length - 1, 0,
+        {label: 'Install alula Artemis Launcher               [save op]', value: 'alula'});
+    }
     const task = await choose(titles.label(title) +
       (artemis ? '\n  Artemis save detected' : '\n  no Artemis files in this save') +
       '\n  (each entry opens the save once; several in a row usually work - restart if one fails)', items);
@@ -694,6 +736,8 @@ async function titleLoop(session, title, uid) {
       await replaceFromDirectory(session, title, uid, backup);
     } else if (task.value === 'launcher') {
       await installLauncher(session, title, uid, backup);
+    } else if (task.value === 'alula') {
+      await installAlula(session, title, uid, backup);
     } else if (task.value === 'editor') {
       await installEditor(session, title, uid, backup);
     } else if (task.value === 'delete') {
