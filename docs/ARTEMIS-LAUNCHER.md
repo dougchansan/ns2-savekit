@@ -288,9 +288,10 @@ written. Installs made by the current tool always have one.
 The 2026-11-01 recovery experiment staged `save:/inject2.lua` (an update file
 that writes `save:/inject2-ran.txt`) to prove whether the minus-at-startup bypass
 worked. Both were **removed from the save** on 2026-11-01 at 21:19 via the
-launcher's HTTP `DELETE`, and the final state has neither file. They are not
-deleted automatically by any tool; if a later experiment leaves them, remove
-them with the save you are authorised to write:
+launcher's HTTP `DELETE`, and a live `/eval` at 22:50 confirmed both are still
+absent (`inject2.lua ABSENT`, `inject2-ran.txt ABSENT`, transcript section 10).
+They are not deleted automatically by any tool; if a later experiment leaves
+them, remove them with the save you are authorised to write:
 
 ```sh
 curl -X DELETE 'http://<console>:8080/delete?path=save:/inject2.lua'

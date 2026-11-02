@@ -234,3 +234,19 @@ save9999.dat    28400   3714976867     3714976867
 
 Relaunch: HOME -> X -> A (close software), relaunch, launcher screen again,
 Y -> `GET /status` 200 and `POST /eval` -> `relaunch ok Ounce`.
+
+## 10. Temporary test artifacts, live check — 2026-11-01 22:50
+
+Booted the installed launcher and started the HTTP server (Y), then queried the
+save directly. This is a current check, not the earlier delete log:
+
+```
+POST /eval
+  inject2.lua ABSENT
+  inject2-ran.txt ABSENT
+  core.lua true
+  http status Ounce
+```
+
+So the recovery-test update files are not present in the save, and the launcher
+core is.
