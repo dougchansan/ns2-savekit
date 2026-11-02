@@ -1100,6 +1100,37 @@ function printRestoreAnalysis(analysis) {
   if (updates.length) console.log('  note: ' + updates.join(', '));
 }
 
+// Stage the backup's boot trigger beside a manifest whose `local` is relative,
+// then invoke the writer with that directory as its working directory. The
+// writer reads `entry.local` with fs.readFile, so without the cwd it would
+// resolve the name against the operator's directory; passing it explicitly is
+// what makes restoration independent of where the CLI was started.
+async function stageTriggerForRestore({backupDir, work, title}) {
+  const source = path.join(backupDir, TRIGGER);
+  const bytes = await fsp.readFile(source);
+  await fsp.copyFile(source, path.join(work, TRIGGER));
+  const manifest = {
+    purpose: 'restore the boot trigger for ' + title.name,
+    files: [{path: '/' + TRIGGER, local: TRIGGER, size: bytes.length,
+      sha256: sha256(bytes), replace: true}],
+  };
+  const manifestPath = path.join(work, 'manifest.json');
+  await fsp.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+  return {manifest, manifestPath, bytes};
+}
+
+async function writeRestoreTrigger({session, title, uid, backupDir, work, run = runStep}) {
+  try {
+    const staged = await stageTriggerForRestore({backupDir, work, title});
+    return run('save-write-stage.cjs',
+      [session, title.id, uid, backupDir, staged.manifestPath,
+        '--restore', '--confirm-restore'],
+      {stdio: 'inherit', cwd: work});
+  } finally {
+    await fsp.rm(work, {recursive: true, force: true}).catch(() => {});
+  }
+}
+
 // A migrated installation keeps its pre-identity backup untouched: the
 // immutable original record carries the identity and provenance instead. This
 // helper accepts that narrow case only, and never weakens the modern path.
@@ -1314,17 +1345,8 @@ async function restoreFromOriginal({options, title, session, uid, original}) {
   if (tx.progress.trigger !== 'done') {
     console.log('1/3 restoring ' + TRIGGER + ' from the original backup');
     const work = await fsp.mkdtemp(path.join(os.tmpdir(), 'artemis-restore-'));
-    const bytes = await fsp.readFile(path.join(backup.dir, TRIGGER));
-    await fsp.copyFile(path.join(backup.dir, TRIGGER), path.join(work, TRIGGER));
-    await fsp.writeFile(path.join(work, 'manifest.json'), JSON.stringify({
-      purpose: 'restore the original boot trigger for ' + title.name,
-      files: [{path: '/' + TRIGGER, local: TRIGGER, size: bytes.length,
-        sha256: sha256(bytes), replace: true}],
-    }, null, 2) + '\n');
-    const written = runStep('save-write-stage.cjs',
-      [session, title.id, uid, backup.dir, path.join(work, 'manifest.json'),
-        '--restore', '--confirm-restore'], {stdio: 'inherit'});
-    await fsp.rm(work, {recursive: true, force: true});
+    const written = await writeRestoreTrigger({session, title, uid,
+      backupDir: backup.dir, work});
     if (written.status !== 0) {
       tx.status = 'restore-failed';
       tx.error = 'boot trigger restore failed';
@@ -1441,17 +1463,8 @@ async function restoreLegacy({options, title, session, uid, backup}) {
   if (!triggerDone) {
     console.log('1/3 restoring ' + TRIGGER + ' from the original backup');
     const stage = await fsp.mkdtemp(path.join(os.tmpdir(), 'artemis-legacy-restore-'));
-    const bytes = await fsp.readFile(path.join(backup.dir, TRIGGER));
-    await fsp.copyFile(path.join(backup.dir, TRIGGER), path.join(stage, TRIGGER));
-    await fsp.writeFile(path.join(stage, 'manifest.json'), JSON.stringify({
-      purpose: 'legacy restore of the boot trigger',
-      files: [{path: '/' + TRIGGER, local: TRIGGER, size: bytes.length,
-        sha256: sha256(bytes), replace: true}],
-    }, null, 2) + '\n');
-    const written = runStep('save-write-stage.cjs',
-      [session, title.id, uid, backup.dir, path.join(stage, 'manifest.json'),
-        '--restore', '--confirm-restore'], {stdio: 'inherit'});
-    await fsp.rm(stage, {recursive: true, force: true});
+    const written = await writeRestoreTrigger({session, title, uid,
+      backupDir: backup.dir, work: stage});
     if (written.status !== 0) throw new Failure(EXIT.verify, 'the boot trigger was not restored');
   } else {
     console.log('1/3 trigger already restored');
@@ -1717,5 +1730,6 @@ module.exports = {
   candidateStates, restoreTarget, stateMatchesLive, preinstallProblems, installMode,
   installedEntries,
   originalRecord, transactionRecord, buildMigrationRecord, verifyLegacyStaging,
-  loadOriginalBackupForRestore, retargetSave, loadBackup, stageDirFor, stageTo, stageAndPlan,
+  loadOriginalBackupForRestore, retargetSave, stageTriggerForRestore, writeRestoreTrigger,
+  loadBackup, stageDirFor, stageTo, stageAndPlan,
 };
