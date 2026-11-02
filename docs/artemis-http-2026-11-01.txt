@@ -184,3 +184,55 @@ stat -> absent (all four checked)
 An interrupted upload and a failed PUT (both covered offline) are reported as
 `EINCOMPLETE` with the partial byte count; a corrupted remote copy is refused
 with `EHASH`; a failed write is attempted once, never retried.
+
+## 12. Randomized probe, path validation and transfers — 2026-11-01 23:36
+
+No RPC session. Scratch names use 128-bit random suffixes; ownership is checked
+by reading the content back before cleanup.
+
+```
+$ node tools/artemis-http.cjs probe --host $CONSOLE
+{
+  "rename": {
+    "ok": false,
+    "reason": "rename unsupported or interrupted: save:/.ns2http-probe-b1db…-a: Operation not permitted",
+    "names": {
+      "a": ".ns2http-probe-b1db5f225adb4d3763f4152a458853fb-a",
+      "b": ".ns2http-probe-b1db5f225adb4d3763f4152a458853fb-b"
+    },
+    "cleaned": ["…-b", "…-a"],
+    "left": [],
+    "cleanupError": null,
+    "collided": null
+  },
+  "serverBodyCap": 28672
+}
+stat .ns2http-probe-b1db…-a -> absent
+stat .ns2http-probe-b1db…-b -> absent
+```
+
+Path validation (rejected locally, no HTTP request):
+
+```
+stat save:/../system.dat  -> FAILED[EPATH] parent traversal (exit 9)
+put  save:/../escape      -> FAILED[EPATH] parent traversal (exit 9)
+put  save:/core.lua       -> FAILED[EPROTECTED] (exit 9)
+rm   save:/save9999.dat   -> FAILED[EPROTECTED] (exit 9)
+```
+
+Verified binary transfers (remote read-back hash, download hash, `cmp`, delete):
+
+```
+4096  af4046e794c5efffaae74fc19ea0113350be2e771d3834758a5fc97195bc6d70  MATCH
+16384 0cb74c50d8b85d0f00f70b2d2ff3342d4bc968a729b5f3d2cd7e9d5186a81801  MATCH
+65536 0d4b73fb19b64c603ce821a39db3d5c3928ee91f73d2c18c602569da3a3e8fdd  MATCH
+deleted z-bin-4096.bin / z-bin-16384.bin / z-bin-65536.bin; stat absent
+```
+
+Relaunch (HOME -> X -> A), press Y again:
+
+```
+health: 200, Lua 5.1, Ounce
+stat save:/core.lua        -> present 19156 bytes
+stat save:/save9999.dat    -> present 28400 bytes
+```

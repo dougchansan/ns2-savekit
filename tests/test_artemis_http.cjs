@@ -30,7 +30,8 @@ const BODY_CAP = 0x7000;
 function startServer() {
   const files = new Map();
   const state = {failReadAt: null, failStatusOnce: 0, delayMs: 0, requests: 0,
-    corruptUploads: false, failAppendOnce: false, failPutOnce: false, putCount: 0};
+    corruptUploads: false, failAppendOnce: false, failPutOnce: false, putCount: 0,
+    renameMode: 'ok', deleteFailProbe: false, delayPutAfterStoreMs: 0};
   const server = http.createServer((req, res) => {
     state.requests++;
     let body = Buffer.alloc(0);
@@ -94,7 +95,19 @@ function startServer() {
           const rename = /-- ns2http:rename (\{.*\})/.exec(code);
           if (rename) {
             const spec = JSON.parse(rename[1]);
+            if (state.renameMode === 'unsupported') {
+              return finish(200, 'status: ok\noutput:\nfalse\nOperation not permitted');
+            }
+            if (state.renameMode === 'interrupt') {
+              files.delete(spec.from);
+              return finish(200, 'status: ok\noutput:\nfalse\ninterrupted');
+            }
             if (!files.has(spec.from)) return finish(200, 'status: ok\noutput:\nfalse\nmissing');
+            if (state.renameMode === 'corrupt') {
+              files.set(spec.to, Buffer.from('corrupted'));
+              files.delete(spec.from);
+              return finish(200, 'status: ok\noutput:\ntrue');
+            }
             files.set(spec.to, files.get(spec.from));
             files.delete(spec.from);
             return finish(200, 'status: ok\noutput:\ntrue');
@@ -112,9 +125,16 @@ function startServer() {
           const stored = state.corruptUploads ? Buffer.from(body) : body;
           if (state.corruptUploads && stored.length) stored[stored.length - 1] ^= 0xff;
           files.set(name, stored);
+          if (state.delayPutAfterStoreMs) {
+            return setTimeout(() => finish(200, 'wrote ' + body.length + ' bytes to save:/' + name),
+              state.delayPutAfterStoreMs);
+          }
           return finish(200, 'wrote ' + body.length + ' bytes to save:/' + name);
         }
         if (url.pathname === '/delete' && req.method === 'DELETE') {
+          if (state.deleteFailProbe && name.startsWith('.ns2http-probe-')) {
+            return finish(500, 'delete failed\n');
+          }
           if (PROTECTED.has(name)) return finish(400, 'invalid path: protected file\n');
           if (!files.has(name)) return finish(400, 'delete failed: missing\n');
           files.delete(name);
@@ -334,11 +354,151 @@ async function run() {
       await assert.rejects(dead.status(), error => error.code === 'ECONN');
     });
 
-    await test('rename probe creates, renames and cleans its scratch files', async () => {
+    const probeLeftovers = () => [...fake.files.keys()]
+      .filter(name => name.startsWith('.ns2http-probe-'));
+
+    await test('rename probe uses unique names, verifies ownership and cleans up', async () => {
+      fake.files.set('keep.bin', Buffer.from('unrelated'));
       const probe = await client.probeRename();
       assert.strictEqual(probe.ok, true);
-      assert.ok(!fake.files.has('.ns2http-probe-a'));
-      assert.ok(!fake.files.has('.ns2http-probe-b'));
+      assert.match(probe.names.a, /^\.ns2http-probe-[0-9a-f]{32}-a$/);
+      assert.notStrictEqual(probe.names.a, probe.names.b);
+      assert.deepStrictEqual(probeLeftovers(), []);
+      assert.ok(probe.cleaned.includes(probe.names.b));
+      assert.deepStrictEqual(fake.files.get('keep.bin'), Buffer.from('unrelated'));
+    });
+
+    await test('rename unsupported is reported and leaves no scratch files', async () => {
+      fake.state.renameMode = 'unsupported';
+      try {
+        const probe = await client.probeRename();
+        assert.strictEqual(probe.ok, false);
+        assert.match(probe.reason, /unsupported|interrupted/);
+        assert.deepStrictEqual(probeLeftovers(), []);
+      } finally {
+        fake.state.renameMode = 'ok';
+      }
+    });
+
+    await test('a scratch filename collision leaves the existing file untouched', async () => {
+      const nonce = 'c0ffee1234567890abcdef1234567890';
+      const a = '.ns2http-probe-' + nonce + '-a';
+      fake.files.set(a, Buffer.from('mine'));
+      const probe = await client.probeRename({nonce});
+      assert.strictEqual(probe.ok, false);
+      assert.strictEqual(probe.collided, a);
+      assert.deepStrictEqual(fake.files.get(a), Buffer.from('mine'));
+      assert.ok(!fake.files.has('.ns2http-probe-' + nonce + '-b'));
+      fake.files.delete(a);
+    });
+
+    await test('a failed initial probe upload is reported without leftovers', async () => {
+      fake.state.failPutOnce = true;
+      const probe = await client.probeRename();
+      assert.strictEqual(probe.ok, false);
+      assert.deepStrictEqual(probeLeftovers(), []);
+    });
+
+    await test('a timeout after the upload may have succeeded cleans only owned files', async () => {
+      const slow = new ArtemisHttp({host, port: fake.port, timeout: 120, retries: 0});
+      fake.state.delayPutAfterStoreMs = 500;
+      try {
+        const probe = await slow.probeRename({uploadTimeout: 120});
+        assert.strictEqual(probe.ok, false);
+        assert.deepStrictEqual(probeLeftovers(), []);
+      } finally {
+        fake.state.delayPutAfterStoreMs = 0;
+      }
+    });
+
+    await test('an interrupted rename is reported and its scratch files are cleaned', async () => {
+      fake.state.renameMode = 'interrupt';
+      try {
+        const probe = await client.probeRename();
+        assert.strictEqual(probe.ok, false);
+        assert.deepStrictEqual(probeLeftovers(), []);
+      } finally {
+        fake.state.renameMode = 'ok';
+      }
+    });
+
+    await test('a destination altered by the server is left untouched', async () => {
+      fake.state.renameMode = 'corrupt';
+      try {
+        const probe = await client.probeRename();
+        assert.strictEqual(probe.ok, false);
+        assert.ok(probe.left.includes(probe.names.b));
+        assert.deepStrictEqual(fake.files.get(probe.names.b), Buffer.from('corrupted'));
+        fake.files.delete(probe.names.b);
+      } finally {
+        fake.state.renameMode = 'ok';
+      }
+    });
+
+    await test('a cleanup failure is reported and the file is left behind', async () => {
+      fake.state.deleteFailProbe = true;
+      try {
+        const probe = await client.probeRename();
+        assert.ok(probe.left.length > 0);
+        assert.ok(probe.cleanupError);
+        for (const name of probeLeftovers()) fake.files.delete(name);
+      } finally {
+        fake.state.deleteFailProbe = false;
+      }
+    });
+
+    await test('consecutive and concurrent probes do not interfere', async () => {
+      for (let i = 0; i < 2; i++) {
+        assert.strictEqual((await client.probeRename()).ok, true);
+      }
+      const results = await Promise.all([client.probeRename(), client.probeRename(),
+        client.probeRename()]);
+      for (const probe of results) assert.strictEqual(probe.ok, true);
+      assert.deepStrictEqual(probeLeftovers(), []);
+    });
+
+    const invalidNames = ['..', '.', 'foo..bar', '../core.lua', 'save:/../system.dat',
+      'save:/../../file', '/core.lua', '', 'a/b', 'a\\b', 'a\0b', 'a b', 'a:b'];
+
+    await test('unsafe filenames are rejected before any HTTP request', async () => {
+      for (const name of invalidNames) {
+        const before = fake.state.requests;
+        await assert.rejects(client.stat(name), error => error.code === 'EPATH',
+          JSON.stringify(name));
+        assert.strictEqual(fake.state.requests, before, JSON.stringify(name) +
+          ' must not reach the server');
+      }
+    });
+
+    await test('every read and write entry point shares the validator', async () => {
+      const cases = [
+        () => client.readChunk('../x', 0, 1),
+        () => client.download('..', {out: path.join(tmp('artemis-bad-'), 'x')}),
+        () => client.upload('../x', Buffer.from('x')),
+        () => client.remove('/core.lua'),
+        () => client.backup(['../x'], tmp('artemis-bad-backup-')),
+        () => client.renameRaw('a', '..', true),
+        () => client.putRaw('a/b', Buffer.from('x')),
+        () => client.appendRaw('a\0b', Buffer.from('x')),
+      ];
+      for (const call of cases) {
+        const before = fake.state.requests;
+        await assert.rejects(call(), error => error.code === 'EPATH');
+        assert.strictEqual(fake.state.requests, before);
+      }
+    });
+
+    await test('valid flat names work and protected files remain readable', async () => {
+      fake.files.set('core.lua', Buffer.from('core'));
+      for (const name of ['core.lua', 'save:/core.lua', 'test-file_01.bin', '.hidden']) {
+        await client.stat(name); // no throw; presence is irrelevant
+      }
+      assert.deepStrictEqual(await client.stat('core.lua'), {exists: true, size: 4});
+      assert.deepStrictEqual(await client.readChunk('save:/core.lua', 0, 4),
+        Buffer.from('core'));
+      await assert.rejects(client.upload('core.lua', Buffer.from('x'), {overwrite: true}),
+        error => error.code === 'EPROTECTED');
+      await assert.rejects(client.remove('save9999.dat'), error => error.code === 'EPROTECTED');
     });
 
     await test('atomic upload uses the temporary name and rename', async () => {

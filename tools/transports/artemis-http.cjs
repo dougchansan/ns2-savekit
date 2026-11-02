@@ -46,23 +46,48 @@ class ArtemisHttpError extends Error {
   }
 }
 
-function saveName(name) {
-  if (typeof name !== 'string' || !name) throw new ArtemisHttpError('EPATH', 'empty save path');
-  const bare = name.replace(/^save:\//, '');
-  if (!/^[A-Za-z0-9_.-]+$/.test(bare)) {
-    throw new ArtemisHttpError('EPATH', 'save path must be a flat /name of [A-Za-z0-9_.-]: ' + name);
+const NAME_RE = /^[A-Za-z0-9_.-]+$/;
+
+// One validator for every save path. Read operations may inspect protected
+// files; writes may not. Only flat names are supported, matching the upstream
+// endpoints and the launcher's protected-file rules.
+function parseSaveName(name, {write = false} = {}) {
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new ArtemisHttpError('EPATH', 'empty save path');
   }
-  if (PROTECTED.has(bare)) throw new ArtemisHttpError('EPROTECTED', bare + ' is a protected launcher file');
+  let bare;
+  if (name.startsWith('save:/')) bare = name.slice(6);
+  else if (name.startsWith('/')) {
+    throw new ArtemisHttpError('EPATH', 'absolute paths are not accepted; use save:/name');
+  } else bare = name;
+  if (!bare) throw new ArtemisHttpError('EPATH', 'empty save path');
+  if (bare === '.' || bare === '..') {
+    throw new ArtemisHttpError('EPATH', 'dot path segments are not accepted');
+  }
+  if (bare.includes('..')) {
+    throw new ArtemisHttpError('EPATH', 'parent traversal is not accepted: ' + name);
+  }
+  if (bare.includes('/') || bare.includes('\\')) {
+    throw new ArtemisHttpError('EPATH', 'nested paths are not accepted: ' + name);
+  }
+  if (/[\x00-\x1f\x7f]/.test(bare)) {
+    throw new ArtemisHttpError('EPATH', 'control characters are not accepted');
+  }
+  if (!NAME_RE.test(bare)) {
+    throw new ArtemisHttpError('EPATH', 'unsupported characters in save path: ' + name);
+  }
+  if (write && PROTECTED.has(bare)) {
+    throw new ArtemisHttpError('EPROTECTED', bare + ' is a protected launcher file');
+  }
   return {bare, full: 'save:/' + bare};
 }
 
+function saveName(name) {
+  return parseSaveName(name, {write: true});
+}
+
 function anyName(name) {
-  // Read-only operations may read protected files; they still reject traversal.
-  const bare = String(name).replace(/^save:\//, '');
-  if (!/^[A-Za-z0-9_.-]+$/.test(bare)) {
-    throw new ArtemisHttpError('EPATH', 'save path must be a flat /name: ' + name);
-  }
-  return {bare, full: 'save:/' + bare};
+  return parseSaveName(name, {write: false});
 }
 
 function parseEval(text) {
@@ -395,9 +420,10 @@ class ArtemisHttp {
       localSha256, verified: !!remoteSha256, atomic};
   }
 
-  async putRaw(bare, bytes) {
-    const {text} = await this.request('/save?path=' + encodeURIComponent('save:/' + bare), {
-      method: 'PUT', body: bytes, timeout: Math.max(this.timeout, 20000),
+  async putRaw(bare, bytes, {timeout = Math.max(this.timeout, 20000)} = {}) {
+    const name = saveName(bare).bare;
+    const {text} = await this.request('/save?path=' + encodeURIComponent('save:/' + name), {
+      method: 'PUT', body: bytes, timeout,
     });
     const match = /wrote (\d+) bytes/.exec(text);
     if (!match || Number(match[1]) !== bytes.length) {
@@ -406,11 +432,12 @@ class ArtemisHttp {
   }
 
   async appendRaw(bare, bytes) {
+    const name = saveName(bare).bare;
     const hex = bytes.toString('hex');
     const code = [
-      '-- ns2http:append ' + JSON.stringify({path: bare, length: bytes.length}),
+      '-- ns2http:append ' + JSON.stringify({path: name, length: bytes.length}),
       'local h="' + hex + '"',
-      'local f=assert(io.open("save:/' + bare + '","ab"))',
+      'local f=assert(io.open("save:/' + name + '","ab"))',
       'for i=1,#h,2 do f:write(string.char(tonumber(h:sub(i,i+1),16))) end',
       'f:close()',
       'print("appended")',
@@ -425,9 +452,12 @@ class ArtemisHttp {
   }
 
   async renameRaw(from, to, overwrite) {
+    const source = saveName(from).bare;
+    const destination = saveName(to).bare;
     const code = [
-      '-- ns2http:rename ' + JSON.stringify({from, to, overwrite: !!overwrite}),
-      'local ok,err=os.rename("save:/' + from + '","save:/' + to + '")',
+      '-- ns2http:rename ' + JSON.stringify({from: source, to: destination,
+        overwrite: !!overwrite}),
+      'local ok,err=os.rename("save:/' + source + '","save:/' + destination + '")',
       'print(tostring(ok))',
       'if not ok then print(tostring(err)) end',
     ].join('\n');
@@ -436,28 +466,94 @@ class ArtemisHttp {
     return {ok, reason: ok ? null : (parsed.output[1] || 'rename failed')};
   }
 
-  async probeRename() {
-    // Two scratch files, rename one over the other, then clean both names.
-    const a = '.ns2http-probe-a';
-    const b = '.ns2http-probe-b';
-    try {
-      await this.putRaw(a, Buffer.from('a'));
-      await this.putRaw(b, Buffer.from('b'));
-      const renamed = await this.renameRaw(a, b, true);
-      const after = await this.stat(b);
-      await this.removeRaw(a).catch(() => {});
-      await this.removeRaw(b).catch(() => {});
-      return {ok: renamed.ok, reason: renamed.reason,
-        overwrote: renamed.ok ? after.exists : false};
-    } catch (error) {
-      await this.removeRaw(a).catch(() => {});
-      await this.removeRaw(b).catch(() => {});
-      return {ok: false, reason: error.message};
+  // Probe os.rename with two unique scratch names and ownership-checked
+  // cleanup. The HTTP API cannot create a file exclusively (no O_EXCL): the
+  // existence check before writing narrows the race, and 128-bit random names
+  // make a collision implausible. Any file whose content is not ours is left
+  // untouched and reported.
+  async probeRename({nonce = null, uploadTimeout = null} = {}) {
+    const id = nonce || crypto.randomBytes(16).toString('hex');
+    const a = '.ns2http-probe-' + id + '-a';
+    const b = '.ns2http-probe-' + id + '-b';
+    const contentA = Buffer.from('ns2http-probe-a:' + id);
+    const contentB = Buffer.from('ns2http-probe-b:' + id);
+    const result = {ok: false, reason: null, names: {a, b}, cleaned: [], left: [],
+      cleanupError: null, collided: null};
+    const matches = async (name, contents) => {
+      try {
+        const stat = await this.stat(name);
+        if (!stat.exists) return false;
+        for (const content of contents) {
+          if (stat.size !== content.length) continue;
+          const bytes = await this.readChunk(name, 0, content.length);
+          if (bytes.equals(content)) return true;
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    };
+    // A path may legitimately hold either probe payload (B before the rename,
+    // A after it), so ownership is checked against both.
+    const cleanup = async (name, contents) => {
+      try {
+        if (await matches(name, contents)) {
+          await this.removeRaw(name);
+          result.cleaned.push(name);
+          result.left = result.left.filter(item => item !== name);
+          return;
+        }
+        const stat = await this.stat(name).catch(() => null);
+        if (stat && stat.exists) result.left.push(name);
+      } catch (error) {
+        result.left.push(name);
+        result.cleanupError = error.message;
+      }
+    };
+
+    const existingA = await this.stat(a).catch(() => null);
+    const existingB = await this.stat(b).catch(() => null);
+    if ((existingA && existingA.exists) || (existingB && existingB.exists)) {
+      result.reason = 'scratch filename collision; leaving the existing file untouched';
+      result.collided = existingA && existingA.exists ? a : b;
+      return result;
     }
+
+    try {
+      await this.putRaw(a, contentA, uploadTimeout ? {timeout: uploadTimeout} : {});
+      if (!(await matches(a, [contentA]))) {
+        throw new Error('scratch ownership could not be established after upload');
+      }
+      await this.putRaw(b, contentB, uploadTimeout ? {timeout: uploadTimeout} : {});
+      if (!(await matches(b, [contentB]))) {
+        throw new Error('second scratch ownership could not be established');
+      }
+      const renamed = await this.renameRaw(a, b, true);
+      if (!renamed.ok) {
+        result.reason = 'rename unsupported or interrupted: ' + (renamed.reason || 'unknown');
+      } else {
+        const stat = await this.stat(b);
+        const bytes = stat.exists && stat.size === contentA.length
+          ? await this.readChunk(b, 0, contentA.length).catch(() => null) : null;
+        if (stat.exists && bytes && bytes.equals(contentA)) {
+          result.ok = true;
+          result.overwrote = true;
+        } else {
+          result.reason = 'destination content is not the renamed probe data';
+        }
+      }
+    } catch (error) {
+      result.reason = error.message;
+    } finally {
+      await cleanup(b, [contentA, contentB]);
+      await cleanup(a, [contentA]);
+    }
+    return result;
   }
 
   async removeRaw(bare) {
-    const {text} = await this.request('/delete?path=' + encodeURIComponent('save:/' + bare),
+    const name = saveName(bare).bare;
+    const {text} = await this.request('/delete?path=' + encodeURIComponent('save:/' + name),
       {method: 'DELETE'});
     if (!/deleted /.test(text)) throw new ArtemisHttpError('EPROTO', 'unexpected delete reply: ' + text);
     return text.trim();

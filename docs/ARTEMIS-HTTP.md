@@ -95,6 +95,37 @@ size and SHA-256.
 - Uploads are size-checked with `stat`, then read back by `download` when the
   caller wants a byte comparison.
 
+### Rename probe
+
+`probe` tests whether `os.rename` works, without touching anything else:
+
+- two scratch names with 128-bit random suffixes
+  (`.ns2http-probe-<32 hex>-a`/`-b`);
+- if either already exists, it refuses (`collision`) and leaves it untouched;
+- it writes random recognizable content and reads it back to establish
+  ownership before considering a file disposable;
+- cleanup deletes only files whose content still matches what it wrote; a file
+  that was changed, or whose deletion fails, is left behind and reported;
+- a timeout after the upload may still have succeeded, so cleanup runs in a
+  `finally` block with the same ownership check;
+- the API has no exclusive-create flag (`O_EXCL`), so this is not race-free; the
+  pre-check plus 128-bit names make an accidental collision implausible, and a
+  detected collision is never deleted.
+
+## Path validation
+
+Every operation (stat, read, download, upload, delete, backup, the probe and the
+internal raw helpers) uses one validator:
+
+- accepts a flat name, optionally prefixed with `save:/`;
+- rejects empty names, `.`, `..`, anything containing `..`, `/` or `\`,
+  embedded NUL/control characters, and characters outside `[A-Za-z0-9_.-]`;
+- rejects a leading `/` (absolute path), so `/core.lua` must be passed as
+  `core.lua` or `save:/core.lua`;
+- read-only operations may inspect protected files; upload/delete refuse them.
+
+Invalid paths are rejected locally, before any HTTP request is sent.
+
 ## Backups: explicit files, not a complete archive
 
 The upstream server has **no directory listing**. Probed on hardware:
@@ -174,11 +205,13 @@ That changes the installed upstream launcher and its protected files, so it is
 
 ## Tests
 
-`node tests/test_artemis_http.cjs` — 24 offline tests against a local HTTP server
+`node tests/test_artemis_http.cjs` — 35 offline tests against a local HTTP server
 implementing the real endpoints and body cap. They cover status/health, eval
 errors, the body cap, stat, binary chunked download, resume after a failed
 chunk, hash/size refusal, 4/16/64 KiB uploads, overwrite authorization,
 protected refusals, delete verification, explicit-file backup, retry, timeout,
-connection failure, rename probe and atomic refusal, remote-hash verification,
-corrupted uploads (`EHASH`), interrupted chunked uploads (`EINCOMPLETE`, partial
-size) and the no-retry rule for writes.
+connection failure, atomic refusal, remote-hash verification, corrupted uploads
+(`EHASH`), interrupted chunked uploads (`EINCOMPLETE`, partial size), the
+no-retry rule for writes, randomized rename-probe success/unsupported/collision/
+timeout/interrupt/corrupt-destination/cleanup-failure/consecutive/concurrent
+cases, and the shared filename validator.
