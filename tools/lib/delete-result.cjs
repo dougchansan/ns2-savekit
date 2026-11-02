@@ -54,23 +54,36 @@ function decideDelete({fsResult, commitResult = null, stillPresent = null}) {
     return {classification, code: EXIT.failed, needsCommit: false, verify: false,
       reason: 'refused'};
   }
-  if (commitResult !== null && Number(commitResult) !== 0) {
+  if (classification === 'not-found') {
+    // Already absent needs no commit, but it still needs a verified read-back.
+    if (stillPresent === null) {
+      return {classification, code: EXIT.other, needsCommit: false, verify: true,
+        reason: 'unverified'};
+    }
+    if (stillPresent === true) {
+      return {classification, code: EXIT.failed, needsCommit: false, verify: true,
+        reason: 'still-present'};
+    }
+    return {classification, code: EXIT.notFound, needsCommit: false, verify: true,
+      reason: 'already-absent'};
+  }
+  // A real deletion needs an explicit successful commit. A missing commit
+  // result is NOT success, even if the file happens to be absent.
+  if (commitResult === null) {
+    return {classification, code: EXIT.other, needsCommit: true, verify: false,
+      reason: 'commit-missing'};
+  }
+  if (Number(commitResult) !== 0) {
     return {classification, code: EXIT.commit, needsCommit: true, verify: false,
       reason: 'commit-failed'};
   }
-  // Every other path must be verified by a read-only reopen. A caller that has
-  // not looked cannot claim success.
   if (stillPresent === null) {
-    return {classification, code: EXIT.other, needsCommit: false, verify: true,
+    return {classification, code: EXIT.other, needsCommit: true, verify: true,
       reason: 'unverified'};
   }
   if (stillPresent === true) {
     return {classification, code: EXIT.failed, needsCommit: true, verify: true,
       reason: 'still-present'};
-  }
-  if (classification === 'not-found') {
-    return {classification, code: EXIT.notFound, needsCommit: false, verify: true,
-      reason: 'already-absent'};
   }
   return {classification, code: EXIT.ok, needsCommit: true, verify: true,
     reason: 'deleted'};
