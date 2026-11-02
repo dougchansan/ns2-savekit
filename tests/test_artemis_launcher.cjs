@@ -633,6 +633,107 @@ async function run() {
     assert.strictEqual(adopted.record, undefined);
   });
 
+  // ------------------------------------------- restore staging path (cwd) --
+  await test('restore staging uses a cwd-relative manifest for every baseline', async () => {
+    const cases = [
+      {name: 'modern', backup: await loadValid(backupFixture())},
+      {name: 'migrated', backup: await loadValid(backupFixture({identity: false}))},
+      {name: 'legacy', backup: await loadValid(backupFixture({identity: false}))},
+    ];
+    for (const item of cases) {
+      const work = tmp('artemis-stage-' + item.name + '-');
+      const beforeManifest = fs.readFileSync(path.join(item.backup.dir, 'manifest.json'));
+      const beforeTrigger = fs.readFileSync(path.join(item.backup.dir, 'save9999.dat'));
+      const staged = await launcher.stageTriggerForRestore({backupDir: item.backup.dir,
+        work, title: TITLE_OBJ()});
+      assert.strictEqual(staged.manifest.files[0].local, 'save9999.dat',
+        item.name + ': manifest local must stay relative to the staging cwd');
+      assert.deepStrictEqual(fs.readFileSync(path.join(work, 'save9999.dat')),
+        beforeTrigger, item.name + ': staged trigger is the backup trigger');
+      let captured = null;
+      const result = await launcher.writeRestoreTrigger({session: 'unused',
+        title: TITLE_OBJ(), uid: UID, backupDir: item.backup.dir, work,
+        run: (script, args, options) => {
+          const manifest = JSON.parse(fs.readFileSync(args[4], 'utf8'));
+          const bytes = fs.readFileSync(path.resolve(options.cwd, manifest.files[0].local));
+          captured = {script, args, options, manifest, bytes};
+          return {status: 0};
+        }});
+      assert.strictEqual(result.status, 0);
+      assert.strictEqual(captured.script, 'save-write-stage.cjs');
+      assert.strictEqual(captured.options.cwd, path.resolve(work),
+        item.name + ': writer must run in the staging directory');
+      assert.strictEqual(captured.args[4], path.join(work, 'manifest.json'));
+      assert.strictEqual(captured.manifest.files[0].local, 'save9999.dat');
+      assert.strictEqual(captured.manifest.files[0].sha256, sha(beforeTrigger));
+      assert.deepStrictEqual(captured.bytes, beforeTrigger,
+        item.name + ': writer reads the staged copy, not the backup copy');
+      assert.ok(!fs.existsSync(work), item.name + ': staging is cleaned up');
+      assert.deepStrictEqual(fs.readFileSync(path.join(item.backup.dir, 'manifest.json')),
+        beforeManifest, 'backup manifest untouched');
+      assert.deepStrictEqual(fs.readFileSync(path.join(item.backup.dir, 'save9999.dat')),
+        beforeTrigger, 'backup trigger untouched');
+    }
+  });
+
+  await test('the real child resolves the staged trigger only with the staging cwd', async () => {
+    const backup = await loadValid(backupFixture());
+    const work = tmp('artemis-child-');
+    const unrelated = tmp('artemis-unrelated-cwd-');
+    const staged = await launcher.stageTriggerForRestore({backupDir: backup.dir, work,
+      title: TITLE_OBJ()});
+    const mock = path.join(ROOT, 'tests', 'helpers', 'restore-writer-mock.cjs');
+    const good = spawnSync(process.execPath, [mock, staged.manifestPath],
+      {cwd: work, encoding: 'utf8'});
+    assert.strictEqual(good.status, 0, good.stderr);
+    const parsed = JSON.parse(good.stdout);
+    assert.strictEqual(parsed.files[0].ok, true);
+    assert.strictEqual(parsed.files[0].local, 'save9999.dat');
+    // The old bug: run the same writer from an unrelated directory and the
+    // relative local cannot be read.
+    const bad = spawnSync(process.execPath, [mock, staged.manifestPath],
+      {cwd: unrelated, encoding: 'utf8'});
+    assert.strictEqual(bad.status, 3, 'without cwd the relative local must fail');
+    assert.match(bad.stdout, /"error":"ENOENT"/);
+  });
+
+  await test('missing or altered staged triggers fail closed', async () => {
+    const backup = await loadValid(backupFixture());
+    const mock = path.join(ROOT, 'tests', 'helpers', 'restore-writer-mock.cjs');
+    const missingWork = tmp('artemis-missing-');
+    const missing = await launcher.stageTriggerForRestore({backupDir: backup.dir,
+      work: missingWork, title: TITLE_OBJ()});
+    fs.rmSync(path.join(missingWork, 'save9999.dat'));
+    const missingRun = spawnSync(process.execPath, [mock, missing.manifestPath],
+      {cwd: missingWork, encoding: 'utf8'});
+    assert.strictEqual(missingRun.status, 3);
+
+    const alteredWork = tmp('artemis-altered-');
+    const altered = await launcher.stageTriggerForRestore({backupDir: backup.dir,
+      work: alteredWork, title: TITLE_OBJ()});
+    fs.appendFileSync(path.join(alteredWork, 'save9999.dat'), Buffer.from([0]));
+    const alteredRun = spawnSync(process.execPath, [mock, altered.manifestPath],
+      {cwd: alteredWork, encoding: 'utf8'});
+    assert.strictEqual(alteredRun.status, 3);
+  });
+
+  await test('writer failure and exceptions propagate and still clean the staging dir', async () => {
+    const backup = await loadValid(backupFixture());
+    const failedWork = tmp('artemis-writer-fail-');
+    const failed = await launcher.writeRestoreTrigger({session: 'unused',
+      title: TITLE_OBJ(), uid: UID, backupDir: backup.dir, work: failedWork,
+      run: () => ({status: 9})});
+    assert.strictEqual(failed.status, 9);
+    assert.ok(!fs.existsSync(failedWork), 'failed writer staging cleaned up');
+
+    const throwWork = tmp('artemis-writer-throw-');
+    await assert.rejects(launcher.writeRestoreTrigger({session: 'unused',
+      title: TITLE_OBJ(), uid: UID, backupDir: backup.dir, work: throwWork,
+      run: () => { throw new Error('simulated transport loss'); }}),
+      /simulated transport loss/);
+    assert.ok(!fs.existsSync(throwWork), 'exception staging cleaned up');
+  });
+
   // -------------------------------------- restore baseline (modern + migrated) --
   await test('a migrated legacy baseline passes restore preflight', async () => {
     const originalBackup = await loadValid(backupFixture({identity: false}));

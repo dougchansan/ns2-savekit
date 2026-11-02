@@ -272,8 +272,12 @@ node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <32
 node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <32-hex>   --confirm-restore
 ```
 
-Order of operations: validate the original record and its backup; pull the live
-save; find the recorded state it matches (original install, any transaction's
+The staged boot trigger is written into a private temporary directory and the
+writer is run with that directory as its working directory, because the manifest
+names the trigger relatively. Restoration therefore behaves the same from any
+operator directory; the staging directory is removed on success, failure or
+exception. Order of operations: validate the original record and its backup;
+pull the live save; find the recorded state it matches (original install, any transaction's
 post-state or pre-state); refuse if a launcher file was modified, is missing, or
 an unowned launcher file appears; mark a restore transaction `restoring`; write
 the original backup's `save9999.dat`; delete only the files the first install
@@ -445,7 +449,7 @@ mount was above the fallback threshold, so that path was not the cause. The
 console was restored to the HOME menu by a power cycle after each wedged
 attempt; no save operation was issued in any of them, so nothing on the console
 changed. Validation for the new destructive paths is therefore **offline only**
-(43 installer tests + 14 delete-result tests). Still to prove on hardware: a
+(47 installer tests + 14 delete-result tests). Still to prove on hardware: a
 fresh identity-bearing pull feeding a receipt; receipt-driven restore
 preflight/`--dry-run`; refusal of a modified launcher file; `save-delete-root`
 propagation; and the post-rollback pull.
