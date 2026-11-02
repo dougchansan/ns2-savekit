@@ -18,19 +18,19 @@ save is stored in this repository.
 
 ## Three different launchers, deliberately kept apart
 
-| | Seedsow Lua Editor | our ns2jb launcher (kit option 4) | alula Artemis Launcher (kit option 8) |
+| | Seedsow Lua Editor | our ns2jb launcher (kit entry 4) | alula Artemis Launcher (separate kit entry) |
 | --- | --- | --- | --- |
 | made by | [DialingSpoon527](https://github.com/DialingSpoon527/seedsow-lua-editor) | this repository | [alula](https://github.com/alula/switch-artemis-launcher) |
 | gets you | an on-console Lua editor in slots 1-3 | a headless body that runs at every boot | a menu: Hello World slot, HTTP Lua server, update mechanism |
 | files | 275, its own slots | `ns2jb.asb`, `ns2jb.lua`, `save9999.dat` | `core.lua`, `inject.iet`, `inject.lua`, `http.lua`, `exploita.lua`, `proggy.ttf`, `save9999.dat` |
 | boot trigger | its own slots | `save9999.dat` | `save9999.dat` |
-| status | installed and used on hardware | built; option 4 is unchanged | **installed and tested on hardware** (this doc) |
+| status | installed and used on hardware | built; its kit entry is unchanged | **installed and tested on hardware** (this doc) |
 
 The editor and the two launchers do not share file names, so the editor's files
 survive an Artemis Launcher install untouched. The two launchers **do** share the
 one boot trigger, `save9999.dat`, so they are alternatives: installing one
-replaces the other's boot path. Option 4 is not modified; this is a separate
-option and a separate tool.
+replaces the other's boot path. The existing payload entry is not modified; this
+is a separate entry and a separate tool.
 
 ## What it writes
 
@@ -66,6 +66,11 @@ author's copies; ours are the game's current files and are left alone.
   gitignored; the public list stays empty);
 - the account uid, either passed with `--uid` or present in the local
   `config/uids.json`;
+- a **complete, identity-bearing backup** for install/verify/restore. A backup
+  pulled by the current `save-pull-root.cjs` records the full program id and
+  account uid. Backups made before that change are "legacy": they can be
+  inspected and staged, but they cannot authorize a write or a restore (see
+  [Backup integrity](#backup-integrity));
 - `node` 20+, `python3`, `curl`, `tar` (curl/tar only for the first download).
 
 Firmware and game version:
@@ -80,7 +85,9 @@ Firmware and game version:
 
 ## Using it
 
-From the kit (`node tools/kit.cjs`, pick a supported demo):
+From the kit (`node tools/kit.cjs`, pick a supported demo). The entry is the one
+labelled **`Install alula Artemis Launcher`**. Its number is **not fixed**: the
+kit inserts or omits entries by title, so on this save the list is
 
 ```
 1) List files in this save (read-only)      [save op]
@@ -94,36 +101,102 @@ From the kit (`node tools/kit.cjs`, pick a supported demo):
 9) Back to the title list
 ```
 
-Option 8 backs the save up first if there is no backup yet, shows the plan (every
-file with its size and hash, add vs replace), and writes only after `y`. Then it
-pulls the save again and checks every entry against the manifest.
+but a title with no Artemis files shows only entries 1-3 plus delete/verify/back,
+and the alula entry itself appears only for the two supported demos. Read the
+label, not the number.
+
+Selecting it backs the save up first if there is no backup yet, shows the plan
+(every file with its size and hash, add vs replace), and writes only after `y`.
+Then it pulls the save again and checks every entry against the manifest, and it
+records an installation receipt.
 
 By hand:
 
 ```sh
-# pair no console: build the plan from a local backup with a verified checkout
+# build the plan from a local backup with a verified checkout (no console)
 node tools/artemis-launcher.cjs plan \
   --title 010042d022aea000 \
-  --backup saves/Seedsow-Lullaby-demo/user-<uid8>/2026-11-01_2055 \
+  --backup saves/Seedsow-Lullaby-demo/user-<uid8>/<timestamp> \
   --source /path/to/verified/switch-artemis-launcher
 
-# exact command the kit runs; --confirm is the write authorization
+# install; --confirm is the explicit write authorization
 node tools/artemis-launcher.cjs install <run> \
   --title 010042d022aea000 --uid <32-hex> \
-  --backup saves/Seedsow-Lullaby-demo/user-<uid8>/2026-11-01_2055 --confirm
+  --backup saves/Seedsow-Lullaby-demo/user-<uid8>/<timestamp> --confirm
 
 # pull again and compare against the manifest
 node tools/artemis-launcher.cjs verify <run> --title 010042d022aea000 --uid <32-hex> \
-  --backup saves/Seedsow-Lullaby-demo/user-<uid8>/2026-11-01_2055
+  --backup saves/Seedsow-Lullaby-demo/user-<uid8>/<timestamp>
 ```
 
-Exit codes: `0` done and verified, `2` bad usage, `3` session lost, `4` no live
-host, `5` unsupported title, `6` missing prerequisite (no backup, no archive, no
-upstream), `7` conflict, `8` verification failed.
+`install` checks `--confirm` before it pulls or stages anything; use `plan`
+(or `install --dry-run`) to inspect without authorizing. Exit codes: `0` done
+and verified, `2` bad usage / missing authorization, `3` session lost, `4` no
+live host, `5` unsupported title, `6` missing or invalid prerequisite (no
+backup, legacy backup, no upstream), `7` conflict, `8` verification failed.
 
 The download cache is `~/.cache/ns2-savekit/artemis-launcher/<commit>/`. Every
 use re-hashes the files, so a cache edit is refused rather than installed.
 `--source` accepts a local checkout for offline use, with the same hash gate.
+`ARTEMIS_CACHE` moves the cache.
+
+### Staging
+
+Rebuilding the payload never deletes an arbitrary directory:
+
+- staging lives under `<repo>/staging/alula-artemis/<title-id>` or the OS temp
+  directory; `--out` must resolve inside one of those. The repository root, the
+  home directory, the filesystem root and unrelated existing directories are
+  refused;
+- an existing staging directory is only replaced when it carries
+  `.artemis-staging.json` for the same title. It is built in a marked sibling,
+  then promoted with `rename()`;
+- a failed build discards only that sibling. The previous staged payload and its
+  manifest are left byte-for-byte intact;
+- symlinked targets and symlinked parents that escape the allowed roots are
+  refused.
+
+## Backup integrity
+
+Every write and restore is authorized by a backup, so a directory name is not
+enough. `tools/lib/artemis-backup.cjs` checks all of this before a console
+operation, for staging, install, verify and restore alike:
+
+- `manifest.json` parses, lists a non-empty `entries` array, `partial` is not
+  true, and `failed` is empty;
+- the `files` count and `bytes` total agree with the entries;
+- every path is a safe flat save path, with no duplicates;
+- every entry names a regular file (not a symlink) whose size and SHA-256 match;
+- the boot trigger exists in the backup and matches its entry;
+- for install/verify/restore, the manifest records the full 16-hex program id
+  and 32-hex account uid, and they match `--title` / `--uid`.
+
+The truncated `uid=...` in the human-readable `archive` line is **not** identity:
+two accounts can share that prefix. A legacy backup without full identity is
+refused for install/verify/restore with a message to pull a new backup.
+
+## Installation receipts
+
+A backup proves the "before" state. It does not prove that a file now on the
+console was written by this installer - the user may have edited a launcher
+script, or a second installation may be present. The installer therefore writes
+a receipt **before** the console transaction:
+
+- location: `~/.local/state/ns2-savekit/artemis-launcher/receipts/` (mode 0700,
+  files 0600), override with `ARTEMIS_STATE`. It is local, gitignored by
+  construction and never committed; it contains the full account uid;
+- filename: `<title-id>-<sha256(title:uid)[0:16]>.json`, so a listing does not
+  expose the account id;
+- contents: title id/name, full account uid, backup path + manifest SHA-256 +
+  entry count + trigger SHA-256 + archive identity, pinned upstream commit,
+  every installed path with its SHA-256 and size, `kind: add|replace`, the
+  original SHA-256/size for the replaced trigger, install status, timestamps,
+  and restore progress (`trigger`, `deleted[]`);
+- statuses: `installing`, `installed`, `install-failed`, `restoring`,
+  `restored`, `restore-failed`.
+
+The receipt is updated after each destructive step, so an interrupted restore
+can be resumed and files already removed are skipped.
 
 ## Conflicts
 
@@ -132,6 +205,10 @@ use re-hashes the files, so a cache edit is refused rather than installed.
   `save9999.dat` may be replaced.
 - **`save9999.dat` is missing**: exits `6`. That save has no suspend trigger, so
   this launcher has no way to run.
+- **A launcher file was modified after installation**: restore reports
+  `modified` and refuses to delete it. The same applies to a missing file, an
+  unexpected launcher-named file, or a trigger that matches neither the
+  installed nor the restored hash.
 - **Our ns2jb launcher is installed**: both use `save9999.dat`. Installing
   Artemis Launcher replaces the boot path; `ns2jb.asb`, `ns2jb.lua` and
   `sscode004.lua` stay in the save. Restoring the pre-install `save9999.dat`
@@ -139,6 +216,8 @@ use re-hashes the files, so a cache edit is refused rather than installed.
 - **The Seedsow Lua Editor** is not touched: none of its files collide. While
   Artemis Launcher owns the boot trigger the game does not reach its own slot
   menu, so the editor is only reachable again after a restore.
+- **Upstream update files** (`core2.lua`, `http2.lua`, `inject2.lua`) are
+  reported during restore and never deleted: they are not ours.
 
 ## Verification
 
@@ -156,39 +235,73 @@ six files were added, one was replaced, and **289 files were byte-identical**.
 
 ## Rollback
 
-The installer prints the exact command. It needs the same live session, because
-restoring writes to the save:
+Restore is receipt-driven. It first reads the live save (read-only) and compares
+every installed path with the receipt:
 
 ```sh
-node tools/artemis-launcher.cjs restore <run> \
-  --title 010042d022aea000 --uid <32-hex> \
-  --backup saves/Seedsow-Lullaby-demo/user-<uid8>/2026-11-01_2055 \
+# preflight only: pull, compare, print the plan, change nothing
+node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <32-hex> \
+  --confirm-restore --dry-run
+
+# perform it
+node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <32-hex> \
   --confirm-restore
 ```
 
-That restores `save9999.dat` from the backup (the only file it replaced) and
-deletes the six files it added, then pulls and compares the trigger. Doing it by
-hand is the same two steps:
+Order of operations: validate the receipt and backup; pull the live save;
+refuse if any installed file changed, is missing, or if an unowned launcher file
+appears; mark the receipt `restoring`; write the backup's `save9999.dat`; delete
+only the receipt's `add` files; pull again and check the trigger equals the
+backup and every added file is gone; mark the receipt `restored`.
+
+If a deletion fails, the trigger is already restored (the game boots normally),
+the receipt records `restore-failed`, and re-running resumes: removed files are
+skipped, and the preflight verifies what is left. `save-delete-root` now exits
+non-zero when `DeleteFile` fails and reopens the file to prove it is absent; a
+missing file exits `10`, which restore treats as already done.
+
+`--uid` may be omitted when exactly one receipt exists for the title; the
+account is read from it. If `--backup` is passed it must be the backup the
+receipt was made from.
+
+### Installs made before receipts (legacy)
+
+An installation made with the first version of this tool has no receipt. Restore
+refuses to delete anything automatically, because there is nothing that records
+which files this installer wrote. The conservative path requires
+`--adopt-legacy`, and then establishes ownership by **content**, not by a
+fabricated receipt:
+
+- the backup must carry full identity;
+- the live `save9999.dat` must match either the backup's trigger or the
+  deterministic retarget of it;
+- every live launcher file must equal the pinned upstream bytes for that title
+  (`core.lua` from the matching overlay, the rest from `common/`).
+
+Anything else is reported and the restore is refused. The legacy restore is
+idempotent, so an interrupted run is resumed by re-running it. No receipt is
+written. Installs made by the current tool always have one.
+
+## Temporary hardware-test files
+
+The 2026-11-01 recovery experiment staged `save:/inject2.lua` (an update file
+that writes `save:/inject2-ran.txt`) to prove whether the minus-at-startup bypass
+worked. Both were **removed from the save** on 2026-11-01 at 21:19 via the
+launcher's HTTP `DELETE`, and the final state has neither file. They are not
+deleted automatically by any tool; if a later experiment leaves them, remove
+them with the save you are authorised to write:
 
 ```sh
-node tools/save-write-stage.cjs <run> 010042d022aea000 <uid> <backup> <one-file-manifest.json> \
-  --restore --confirm-restore
-node tools/save-delete-root.cjs <run> 010042d022aea000 <uid> /core.lua   # and the other five
+curl -X DELETE 'http://<console>:8080/delete?path=save:/inject2.lua'
+curl -X DELETE 'http://<console>:8080/delete?path=save:/inject2-ran.txt'
+# or, through the toolkit's session:
+node tools/save-delete-root.cjs <run> 010042d022aea000 <uid> /inject2.lua
+node tools/save-delete-root.cjs <run> 010042d022aea000 <uid> /inject2-ran.txt
 ```
 
-Then restart the console and boot the game: the original resume path is back.
-If the game will not boot at all, the recovery path is the same one every save
-problem here uses: launch SmileBASIC 4, rerun the ns2jb bootstrap to get a
-session, then restore from the untouched backup.
-
-There is a second, upstream-provided recovery: write `<name>2.lua` to update
-`core.lua`, `http.lua` or `inject.lua`, and hold **minus** at startup to ignore
-the update (`inject.iet` checks `e:isDown(114)`). The payload half of that works
-(measured: minus at the launcher menu prints `[!] RECOVERY MODE`). The
-**startup** half did not: two boots with minus held continuously through the
-resume still loaded `inject2.lua`. Do not rely on it on demo 1.0.0; the backup is
-the reliable rollback. Because of that finding the installer never writes an
-update file, and this report did not stage a deliberately broken update.
+Leaving them does not break the game (the restored trigger no longer loads the
+launcher), but `inject2.lua` would override `inject.lua` on a future install of
+this launcher.
 
 ## Hardware test report — 2026-11-01
 
@@ -198,7 +311,7 @@ the demo's own account (uid not recorded in this repository), ns2jb-rpc session 
 (dial-back from the console, so no console IP is baked into anything here).
 Upstream revision `b9e6de82934dfda1f2c6219aaf305ed980a3d1ba`.
 The sanitised command/output transcript is
-[`artemis-launcher-2026-11-01.txt`](artemis-launcher-2026-11-01.log).
+[`artemis-launcher-2026-11-01.txt`](artemis-launcher-2026-11-01.txt).
 
 | test | result | evidence |
 | --- | --- | --- |
@@ -234,6 +347,22 @@ save9999.dat  ca47241097a250615e6a1a5c263f86b16729691d91740754a791c6006e1cd63c
               (rebuilt from the backup's d149d71bf87f160825084c952575c620802ca562db894962be2ca0cc818ab342;
               full hash in the staging manifest)
 ```
+
+### Review-fix validation status (2026-11-01, after the hardware run)
+
+The staging, receipt, backup-integrity and delete-propagation fixes landed after
+this hardware run. No live RPC session was available to exercise them on the
+console: two fresh-boot acquisitions for the Nora attempt failed at ns2jb stage
+2/4 (`Native batch did not terminate`, then `Clean alias did not qualify within
+its attempt limit`), and no session has been held since. Validation for these
+changes is therefore **offline only** (29 installer tests + 7 delete-result
+tests). Still to prove on hardware: a fresh identity-bearing pull feeding a
+receipt; receipt-driven restore preflight/`--dry-run`; refusal of a modified
+launcher file; `save-delete-root` propagation; and the post-rollback pull.
+
+The Seedsow installation described above predates receipts, so its rollback uses
+the conservative `--adopt-legacy` path (live bytes must equal the pinned release)
+rather than a receipt-driven restore.
 
 ### What remains untested
 

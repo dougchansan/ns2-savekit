@@ -966,7 +966,7 @@ Two findings that shape the integration:
   payload half works (minus at the launcher menu prints `[!] RECOVERY MODE`).
   Treat the update fail-safe as unverified and keep a backup as the rollback.
 
-`tools/artemis-launcher.cjs` and kit option **8** make the install reproducible:
+`tools/artemis-launcher.cjs` and the kit's **Install alula Artemis Launcher** entry make the install reproducible:
 pinned download with per-file hashes, deterministic staging manifest, add/replace
 conflict reporting, backup + `--confirm` required, pull-after-write verification,
 and `restore` for the boot trigger plus the six added files.

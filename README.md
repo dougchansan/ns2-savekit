@@ -62,7 +62,7 @@ scripts and prints the exact command before each one.
 | all saves (a) | list every archive the console's save index knows, cartridge saves included, no titledb |
 | pull batch (p) | pull the next pending archives from that inventory (default 5) |
 | launcher / editor | Artemis only: install the payload set or the Seedsow Lua Editor save |
-| alula launcher (8) | Artemis demo only: install alula's upstream Artemis Launcher, verify it, or roll it back |
+| alula launcher | Artemis demo only: install alula's upstream Artemis Launcher and record a receipt, verify it, or roll it back safely (the menu number moves with the title's other entries; read the label) |
 
 writes are fenced:
 
@@ -191,7 +191,8 @@ node tests/test_console_names.cjs    # ns name read: services, buffers (11)
 node tests/test_content_names.cjs    # control-NCA name read (7)
 node tests/test_titles.cjs           # name layers and the console cache (10)
 node tests/test_restore_manifest.cjs # generic restore path (6)
-node tests/test_artemis_launcher.cjs # alula launcher: pins, staging, rollback (14)
+node tests/test_artemis_launcher.cjs # alula launcher: staging, backups, receipts, rollback (29)
+node tests/test_delete_result.cjs    # delete result propagation (7)
 node tests/test_nso_verify.cjs       # NSO0 parsing, LZ4, hashes (13)
 node tests/test_smb_meta.cjs         # META name block surgery (5)
 sh   tests/test_inject_dryrun.sh     # injection builder/manifest (3)
