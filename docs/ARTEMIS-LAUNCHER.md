@@ -238,7 +238,12 @@ save9999.dat  ca47241097a250615e6a1a5c263f86b16729691d91740754a791c6006e1cd63c
 ### What remains untested
 
 - **Nora 2 demo** (`010012900d38a000`): the code path is implemented and unit
-  tested, but no hardware install was performed in this session.
+  tested, but no hardware install was performed in this session. A later
+  hardware attempt (2026-11-01 21:40-21:50) stopped **before** the installer
+  ran: ns2jb's stage-2/4 FS-root acquisition failed twice on fresh boots
+  (`Native batch did not terminate; resources retained`, then `Clean alias did
+  not qualify within its attempt limit`). No Nora save was opened or written;
+  the Seedsow installation was untouched.
 - **Startup update bypass** (minus held through resume): not effective on demo
   1.0.0 in two attempts. Upstream's fail-safe should be treated as unverified.
 - **Other firmware** and other demo builds: only 23.0.1 / Ver. 1.0.0 measured.
