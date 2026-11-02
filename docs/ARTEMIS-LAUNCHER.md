@@ -431,6 +431,14 @@ save9999.dat  ca47241097a250615e6a1a5c263f86b16729691d91740754a791c6006e1cd63c
               full hash in the staging manifest)
 ```
 
+### Rollback hardware validation
+
+The destructive restore path has **not** been run on hardware: three controlled
+ns2jb acquisitions on 2026-11-02 failed at stage 2/4 before any save operation.
+See [ARTEMIS-ROLLBACK-HARDWARE.md](ARTEMIS-ROLLBACK-HARDWARE.md) for the attempt
+log, the blocked test matrix and the remaining hardware requirements. Offline
+restore tests pass, but they are not a hardware validation.
+
 ### Review-fix validation status (2026-11-01, after the hardware run)
 
 The staging, receipt, backup-integrity and delete-propagation fixes landed after
