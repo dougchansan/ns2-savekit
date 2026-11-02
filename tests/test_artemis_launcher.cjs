@@ -71,7 +71,7 @@ function backupFixture({withTrigger = true, withManifest = true, extra = []} = {
   }
   if (withManifest) {
     fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
-      archive: 'space=User type=Account rank=0 index=0 uid=539fd27752770010',
+      archive: 'space=User type=Account rank=0 index=0 uid=aaaaaaaaaaaaaaaa',
       files: entries.length, bytes: entries.reduce((n, e) => n + e.size, 0), entries,
     }));
   }
