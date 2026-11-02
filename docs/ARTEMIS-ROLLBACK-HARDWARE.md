@@ -40,11 +40,21 @@ save tools. The console was power-cycled back to HOME after each attempt.
 A separate `NS2_TMP_FALLBACK=1` attempt found the tmp mount above the fallback
 threshold, so that mitigation did not apply.
 
+On 2026-11-02 the failures were re-investigated rather than retried blindly.
+The host code is identical to the 52 historical successful sessions, the SD
+card is not inserted, and the current runs split into four different
+qualification failures. One deterministic defect was proven: the local
+`allPending` test rejects `extent-present` waves that upstream's merged
+`qualifyOverlap` accepts (27/30 replayed rows). An isolated host with that fix
+advanced past extent requalification but then missed the canary. The full
+evidence and the next experiments are in
+[NS2JB-STAGE2-RELIABILITY.md](NS2JB-STAGE2-RELIABILITY.md).
+
 ## Test matrix
 
 | id | test | status | evidence |
 | --- | --- | --- | --- |
-| H0 | Obtain promoted PID 1 FS-root session | **BLOCKED** | three stage-2/4 failures above |
+| H0 | Obtain promoted PID 1 FS-root session | **BLOCKED** | three stage-2/4 failures above, plus three controlled 2026-11-02 attempts (extent requalification, then canary after an overlap-fix experiment); see [NS2JB-STAGE2-RELIABILITY.md](NS2JB-STAGE2-RELIABILITY.md) |
 | H1 | Validate session identity / title / account | **BLOCKED** | requires H0 |
 | H2 | Complete read-only save pull + SHA-256 manifest | **BLOCKED** | requires H0 |
 | H3 | Independent second backup copy | **BLOCKED** | requires H2 |
