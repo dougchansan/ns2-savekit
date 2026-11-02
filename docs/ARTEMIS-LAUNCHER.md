@@ -360,7 +360,7 @@ console. Three fresh-boot acquisitions failed at ns2jb stage 2/4:
 
 The console was restored to the HOME menu by a power cycle after each wedged
 attempt; no save operation was issued in any of them, so nothing on the console
-changed. Validation for these changes is therefore **offline only** (29
+changed. Validation for these changes is therefore **offline only** (31
 installer tests + 7 delete-result tests). Still to prove on hardware: a fresh
 identity-bearing pull feeding a receipt; receipt-driven restore
 preflight/`--dry-run`; refusal of a modified launcher file; `save-delete-root`

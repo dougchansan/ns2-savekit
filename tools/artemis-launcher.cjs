@@ -669,17 +669,23 @@ function analyzeReceiptState({live, receipt, backup, title}) {
 
   const trigger = installed.get('/' + TRIGGER);
   const liveTrigger = liveMap.get('/' + TRIGGER);
-  const expectedTrigger = triggerDone ? backup.entries.find(e => e.path === '/' + TRIGGER).sha256
-    : trigger.sha256;
+  const backupTrigger = backup.entries.find(e => e.path === '/' + TRIGGER).sha256;
+  const expectedTrigger = triggerDone ? backupTrigger : trigger.sha256;
+  // An interrupted restore can land between the trigger write and the receipt
+  // update. While status is `restoring`, the backup's trigger is also an
+  // acceptable live state; restore repairs the progress marker.
+  const acceptable = new Set([expectedTrigger]);
+  if (receipt.status === 'restoring') acceptable.add(backupTrigger);
   if (!liveTrigger) {
     out.missing.push('/' + TRIGGER);
     out.problems.push('/' + TRIGGER + ' is missing from the live save');
-  } else if (liveTrigger.sha256 !== expectedTrigger) {
+  } else if (!acceptable.has(liveTrigger.sha256)) {
     out.modified.push('/' + TRIGGER);
     out.problems.push('/' + TRIGGER + ' live sha256 ' + liveTrigger.sha256.slice(0, 16) +
       '… differs from the expected ' + expectedTrigger.slice(0, 16) + '…');
   }
   out.trigger = liveTrigger ? liveTrigger.sha256 : null;
+  out.triggerAlreadyRestored = !!(liveTrigger && liveTrigger.sha256 === backupTrigger);
 
   for (const entry of receipt.installed) {
     if (entry.path === '/' + TRIGGER) continue;
@@ -693,8 +699,14 @@ function analyzeReceiptState({live, receipt, backup, title}) {
       continue;
     }
     if (!liveEntry) {
-      out.missing.push(entry.path);
-      out.problems.push(entry.path + ' is missing');
+      // The same crash window exists between a successful delete and its
+      // receipt update: while restoring, an absent add file is already done.
+      if (receipt.status === 'restoring' && entry.kind === 'add') {
+        out.deleted.push(entry.path);
+      } else {
+        out.missing.push(entry.path);
+        out.problems.push(entry.path + ' is missing');
+      }
     } else if (liveEntry.sha256 !== entry.sha256) {
       out.modified.push(entry.path);
       out.problems.push(entry.path + ' was modified after installation (live ' +
@@ -795,6 +807,9 @@ async function restoreFromReceipt({options, title, session, uid, receipt}) {
   }
   requireRestoreAuthorization(options);
 
+  if (analysis.triggerAlreadyRestored && receipt.progress.trigger !== 'done') {
+    receipt.progress.trigger = 'done';
+  }
   receipt.status = 'restoring';
   receipt.updatedAt = new Date().toISOString();
   await receipts.writeReceipt(receipt);

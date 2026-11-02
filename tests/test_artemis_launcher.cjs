@@ -410,6 +410,26 @@ async function run() {
     assert.deepStrictEqual(analysis.deleted.sort(), ['/core.lua', '/http.lua']);
   });
 
+  await test('preflight resumes when a delete landed but its receipt update did not', async () => {
+    const {receipt, backup} = await receiptFixture({status: 'restoring',
+      progress: {trigger: 'pending', deleted: []}});
+    const live = liveFromReceipt(receipt);
+    live.entries = live.entries.filter(e => e.path !== '/http.lua');
+    const analysis = launcher.analyzeReceiptState({live, receipt, backup, title: TITLE_OBJ()});
+    assert.deepStrictEqual(analysis.problems, []);
+    assert.deepStrictEqual(analysis.deleted, ['/http.lua']);
+  });
+
+  await test('preflight resumes when the trigger landed but its receipt update did not', async () => {
+    const {receipt, backup} = await receiptFixture({status: 'restoring',
+      progress: {trigger: 'pending', deleted: []}});
+    const live = liveFromReceipt(receipt);
+    live.entries.find(e => e.path === '/save9999.dat').sha256 = receipt.backup.triggerSha256;
+    const analysis = launcher.analyzeReceiptState({live, receipt, backup, title: TITLE_OBJ()});
+    assert.deepStrictEqual(analysis.problems, []);
+    assert.strictEqual(analysis.triggerAlreadyRestored, true);
+  });
+
   await test('preflight refuses a replaced trigger that is not the expected one', async () => {
     const {receipt, backup} = await receiptFixture();
     const live = liveFromReceipt(receipt);
