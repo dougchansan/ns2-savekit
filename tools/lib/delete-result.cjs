@@ -38,6 +38,39 @@ function exitForClass(classification) {
   return EXIT.failed;
 }
 
+// Decide the whole delete transaction from its observations, so a commit
+// failure or a file that survives the delete cannot be reported as success.
+//   fsResult     the canonical DeleteFile result
+//   commitResult the Commit result (0 = committed); null when no commit ran
+//   stillPresent the read-only reopen proved the file is still there
+function decideDelete({fsResult, commitResult = null, stillPresent = null}) {
+  const classification = classifyFsResult(fsResult);
+  if (classification === 'failed') {
+    return {classification, code: EXIT.failed, needsCommit: false, verify: false,
+      reason: 'refused'};
+  }
+  if (commitResult !== null && Number(commitResult) !== 0) {
+    return {classification, code: EXIT.commit, needsCommit: true, verify: false,
+      reason: 'commit-failed'};
+  }
+  // Every other path must be verified by a read-only reopen. A caller that has
+  // not looked cannot claim success.
+  if (stillPresent === null) {
+    return {classification, code: EXIT.other, needsCommit: false, verify: true,
+      reason: 'unverified'};
+  }
+  if (stillPresent === true) {
+    return {classification, code: EXIT.failed, needsCommit: true, verify: true,
+      reason: 'still-present'};
+  }
+  if (classification === 'not-found') {
+    return {classification, code: EXIT.notFound, needsCommit: false, verify: true,
+      reason: 'already-absent'};
+  }
+  return {classification, code: EXIT.ok, needsCommit: true, verify: true,
+    reason: 'deleted'};
+}
+
 // A caller that is cleaning up may treat "already absent" as success; it must
 // never treat a failed delete as success.
 function isGone(exitCode) {
@@ -51,4 +84,5 @@ function exitForErrorText(text) {
   return EXIT.other;
 }
 
-module.exports = {EXIT, FS_NOT_FOUND, classifyFsResult, exitForClass, isGone, exitForErrorText};
+module.exports = {EXIT, FS_NOT_FOUND, classifyFsResult, exitForClass, decideDelete,
+  isGone, exitForErrorText};

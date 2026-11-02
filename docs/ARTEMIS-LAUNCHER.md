@@ -257,7 +257,8 @@ backup and every added file is gone; mark the receipt `restored`.
 If a deletion fails, the trigger is already restored (the game boots normally),
 the receipt records `restore-failed`, and re-running resumes: removed files are
 skipped, and the preflight verifies what is left. `save-delete-root` now exits
-non-zero when `DeleteFile` fails and reopens the file to prove it is absent; a
+non-zero when `DeleteFile` fails, reopens the file read-only and checks the root
+listing to prove it is absent; a
 missing file exits `10`, which restore treats as already done.
 
 `--uid` may be omitted when exactly one receipt exists for the title; the
@@ -372,7 +373,7 @@ mount was above the fallback threshold, so that path was not the cause. The
 console was restored to the HOME menu by a power cycle after each wedged
 attempt; no save operation was issued in any of them, so nothing on the console
 changed. Validation for the new destructive paths is therefore **offline only**
-(32 installer tests + 7 delete-result tests). Still to prove on hardware: a
+(33 installer tests + 11 delete-result tests). Still to prove on hardware: a
 fresh identity-bearing pull feeding a receipt; receipt-driven restore
 preflight/`--dry-run`; refusal of a modified launcher file; `save-delete-root`
 propagation; and the post-rollback pull.

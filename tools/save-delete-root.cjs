@@ -6,7 +6,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
-const {EXIT, classifyFsResult, exitForClass} = require('./lib/delete-result.cjs');
+const {EXIT, classifyFsResult, decideDelete} = require('./lib/delete-result.cjs');
 
 function request(socketPath, command) {
   return new Promise((resolve, reject) => {
@@ -96,20 +96,23 @@ async function main() {
     if (classification === 'failed') {
       // Do not commit a filesystem state nobody asked for: report the FS error
       // and leave the save untouched.
+      const decision = decideDelete({fsResult: result});
       console.error('FAILED: DeleteFile was refused (' + code(result) + '); nothing committed');
-      process.exitCode = EXIT.failed;
+      process.exitCode = decision.code;
     } else {
+      let commitResult = 0;
       if (classification === 'deleted') {
         const commit = await s.ipc('Commit save data filesystem', save, 10);
         console.log('commit ->', code(commit.result));
-        if (commit.result) {
+        commitResult = Number(commit.result);
+        const decision = decideDelete({fsResult: result, commitResult});
+        if (decision.reason === 'commit-failed') {
           console.error('FAILED: the delete was accepted but Commit failed; ' +
             'the file may still be present');
-          process.exitCode = EXIT.commit;
+          process.exitCode = decision.code;
         }
       } else {
         console.log('already absent; no commit needed');
-        process.exitCode = EXIT.notFound;
       }
       await s.close(save).catch(() => s.handles.delete(save));
       save = null;
@@ -120,15 +123,26 @@ async function main() {
         const reader = await openSave(53);
         try {
           const present = await filesystem.openFile(s, reader, savePath);
-          if (!present.result) {
+          const byOpen = !present.result;
+          if (byOpen) {
             await s.close(present.handle).catch(() => s.handles.delete(present.handle));
-            console.error('FAILED: ' + savePath + ' is still present after the delete');
-            process.exitCode = EXIT.failed;
-          } else {
-            console.log('verified: ' + savePath + ' is absent ('
-              + code(present.result) + ' on reopen)');
-            process.exitCode = exitForClass(classification);
           }
+          // The final inventory is checked as well as the single open: an open
+          // can fail for reasons other than absence, while a name in the root
+          // listing is proof the file still exists.
+          const listing = await filesystem.listDirectory(s, reader, '/', 65536);
+          const name = savePath.replace(/^\//, '');
+          const byListing = listing.some(entry => entry.name === name);
+          const decision = decideDelete({fsResult: result, commitResult,
+            stillPresent: byOpen || byListing});
+          if (decision.code === EXIT.failed) {
+            console.error('FAILED: ' + savePath + ' is still present after the delete' +
+              ' (open ' + code(present.result) + ', in listing: ' + byListing + ')');
+          } else {
+            console.log('verified: ' + savePath + ' is absent (open '
+              + code(present.result) + ', not in root inventory)');
+          }
+          process.exitCode = decision.code;
         } finally {
           await s.close(reader).catch(() => s.handles.delete(reader));
         }

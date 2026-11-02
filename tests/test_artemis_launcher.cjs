@@ -431,6 +431,23 @@ async function run() {
     assert.strictEqual(analysis.triggerAlreadyRestored, true);
   });
 
+  await test('a second restore sees the post-rollback state and is a no-op', async () => {
+    const initial = await receiptFixture();
+    const adds = initial.receipt.installed.filter(e => e.kind === 'add').map(e => e.path);
+    const {receipt, backup} = await receiptFixture({status: 'restored',
+      progress: {trigger: 'done', deleted: adds}});
+    // The save after a restore: backup trigger, launcher files gone, and an
+    // unrelated editor file that must not be reported as unexpected.
+    const live = {entries: [
+      {path: '/save9999.dat', size: 19, sha256: receipt.backup.triggerSha256},
+      {path: '/ssedit1.lua', size: 5, sha256: sha(Buffer.from('editor'))},
+    ]};
+    const analysis = launcher.analyzeReceiptState({live, receipt, backup, title: TITLE_OBJ()});
+    assert.deepStrictEqual(analysis.problems, []);
+    assert.deepStrictEqual(analysis.deleted.sort(), adds.sort());
+    assert.strictEqual(analysis.triggerAlreadyRestored, true);
+  });
+
   await test('preflight refuses a replaced trigger that is not the expected one', async () => {
     const {receipt, backup} = await receiptFixture();
     const live = liveFromReceipt(receipt);

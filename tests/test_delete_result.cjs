@@ -11,7 +11,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 const {spawnSync} = require('node:child_process');
 const {
-  EXIT, classifyFsResult, exitForClass, isGone, exitForErrorText,
+  EXIT, classifyFsResult, exitForClass, decideDelete, isGone, exitForErrorText,
 } = require(path.join(__dirname, '..', 'tools/lib/delete-result.cjs'));
 
 const TOOL = path.join(__dirname, '..', 'tools', 'save-delete-root.cjs');
@@ -40,6 +40,37 @@ test('every other filesystem result is a failure', () => {
     assert.strictEqual(exitForClass('failed'), EXIT.failed);
     assert.strictEqual(isGone(exitForClass('failed')), false);
   }
+});
+
+test('a delete cannot be reported successful before the reopen verifies it', () => {
+  const decision = decideDelete({fsResult: 0, commitResult: 0, stillPresent: null});
+  assert.strictEqual(decision.reason, 'unverified');
+  assert.strictEqual(decision.code, EXIT.other);
+  assert.strictEqual(isGone(decision.code), false);
+});
+
+test('a successful delete needs commit 0 and a verified-absent reopen', () => {
+  const decision = decideDelete({fsResult: 0, commitResult: 0, stillPresent: false});
+  assert.strictEqual(decision.reason, 'deleted');
+  assert.strictEqual(decision.code, EXIT.ok);
+  const stillThere = decideDelete({fsResult: 0, commitResult: 0, stillPresent: true});
+  assert.strictEqual(stillThere.code, EXIT.failed);
+  assert.strictEqual(isGone(stillThere.code), false);
+});
+
+test('a commit failure is a commit exit even when the FS accepted the delete', () => {
+  const decision = decideDelete({fsResult: 0, commitResult: 0x2ee002, stillPresent: false});
+  assert.strictEqual(decision.reason, 'commit-failed');
+  assert.strictEqual(decision.code, EXIT.commit);
+  assert.strictEqual(decision.verify, false);
+});
+
+test('not-found is only accepted when the reopen agrees it is absent', () => {
+  const gone = decideDelete({fsResult: 0x2, commitResult: 0, stillPresent: false});
+  assert.strictEqual(gone.code, EXIT.notFound);
+  assert.strictEqual(isGone(gone.code), true);
+  const contradiction = decideDelete({fsResult: 0x2, commitResult: 0, stillPresent: true});
+  assert.strictEqual(contradiction.code, EXIT.failed);
 });
 
 test('commit failure is a distinct non-zero exit and never "gone"', () => {
