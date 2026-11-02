@@ -197,6 +197,8 @@ Seedsow Lullaby Demo **Ver. 1.0.0** (`docs/images/2026-11-01-seedsow-demo-versio
 the demo's own account (uid not recorded in this repository), ns2jb-rpc session `switch2-rIh6OU`
 (dial-back from the console, so no console IP is baked into anything here).
 Upstream revision `b9e6de82934dfda1f2c6219aaf305ed980a3d1ba`.
+The sanitised command/output transcript is
+[`artemis-launcher-2026-11-01.txt`](artemis-launcher-2026-11-01.log).
 
 | test | result | evidence |
 | --- | --- | --- |
