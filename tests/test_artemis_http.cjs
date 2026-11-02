@@ -29,7 +29,8 @@ const BODY_CAP = 0x7000;
 
 function startServer() {
   const files = new Map();
-  const state = {failReadAt: null, failStatusOnce: 0, delayMs: 0, requests: 0};
+  const state = {failReadAt: null, failStatusOnce: 0, delayMs: 0, requests: 0,
+    corruptUploads: false, failAppendOnce: false, failPutOnce: false, putCount: 0};
   const server = http.createServer((req, res) => {
     state.requests++;
     let body = Buffer.alloc(0);
@@ -80,11 +81,14 @@ function startServer() {
           }
           const append = /-- ns2http:append (\{.*\})/.exec(code);
           if (append) {
+            if (state.failAppendOnce) { state.failAppendOnce = false; return finish(500, 'append failed'); }
             const spec = JSON.parse(append[1]);
             const hex = /local h="([0-9a-f]*)"/.exec(code)[1];
             const bytes = Buffer.from(hex, 'hex');
             assert.strictEqual(bytes.length, spec.length);
-            files.set(spec.path, Buffer.concat([files.get(spec.path) || Buffer.alloc(0), bytes]));
+            const joined = Buffer.concat([files.get(spec.path) || Buffer.alloc(0), bytes]);
+            if (state.corruptUploads && joined.length) joined[joined.length - 1] ^= 0xff;
+            files.set(spec.path, joined);
             return finish(200, 'status: ok\noutput:\nappended');
           }
           const rename = /-- ns2http:rename (\{.*\})/.exec(code);
@@ -101,9 +105,13 @@ function startServer() {
           return finish(200, 'status: ok\noutput:\nhello world');
         }
         if (url.pathname === '/save' && req.method === 'PUT') {
+          state.putCount++;
           if (!name) return finish(400, 'save failed: empty path\n');
           if (PROTECTED.has(name)) return finish(400, 'save failed: protected file\n');
-          files.set(name, body);
+          if (state.failPutOnce) { state.failPutOnce = false; return finish(500, 'put failed\n'); }
+          const stored = state.corruptUploads ? Buffer.from(body) : body;
+          if (state.corruptUploads && stored.length) stored[stored.length - 1] ^= 0xff;
+          files.set(name, stored);
           return finish(200, 'wrote ' + body.length + ' bytes to save:/' + name);
         }
         if (url.pathname === '/delete' && req.method === 'DELETE') {
@@ -221,6 +229,48 @@ async function run() {
       const out = path.join(tmp('artemis-64k-'), 'up-64k.bin');
       const back = await client.download('up-64k.bin', {out, expectedSha256: sha(bytes)});
       assert.strictEqual(back.sha256, sha(bytes));
+    });
+
+    await test('an upload reports a remotely verified hash by default', async () => {
+      const bytes = Buffer.from('verify me on the console');
+      const got = await client.upload('verified.txt', bytes);
+      assert.strictEqual(got.verified, true);
+      assert.strictEqual(got.sha256, sha(bytes));
+      assert.strictEqual(got.localSha256, sha(bytes));
+      const unverified = await client.upload('unverified.txt', bytes, {verify: false});
+      assert.strictEqual(unverified.verified, false);
+      assert.strictEqual(unverified.sha256, sha(bytes));
+    });
+
+    await test('a corrupted remote upload is refused with EHASH', async () => {
+      fake.state.corruptUploads = true;
+      try {
+        await assert.rejects(client.upload('corrupt.txt', Buffer.from('integrity')),
+          error => error.code === 'EHASH');
+      } finally {
+        fake.state.corruptUploads = false;
+      }
+    });
+
+    await test('an interrupted chunked upload is EINCOMPLETE with a partial size', async () => {
+      const bytes = Buffer.alloc(65536, 0x33);
+      fake.state.failAppendOnce = true;
+      try {
+        await assert.rejects(client.upload('interrupted.bin', bytes), error =>
+          error.code === 'EINCOMPLETE' && error.partial > 0 && error.partial < bytes.length);
+      } finally {
+        fake.state.failAppendOnce = false;
+      }
+      assert.ok(fake.files.get('interrupted.bin').length < bytes.length);
+      fake.files.delete('interrupted.bin');
+    });
+
+    await test('a failed PUT is not retried by the upload path', async () => {
+      fake.state.failPutOnce = true;
+      fake.state.putCount = 0;
+      await assert.rejects(client.upload('no-retry.bin', Buffer.alloc(4096, 7)),
+        error => error.code === 'EINCOMPLETE');
+      assert.strictEqual(fake.state.putCount, 1, 'a non-idempotent write must not be replayed');
     });
 
     await test('overwriting needs explicit authorization', async () => {

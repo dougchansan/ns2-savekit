@@ -151,3 +151,36 @@ getmetatable(_G.e).__index  -> function (not enumerable)
 No complete save listing exists over the current API. Backups are therefore
 explicit-file, not complete archives, and cannot authorize a destructive full
 restore.
+
+## 11. Remote-verified uploads — 2026-11-01 23:21
+
+The upload path now reads the file back over `/eval` and compares its SHA-256
+with the local source before reporting success. Hardware run, no RPC session:
+
+```
+$ node tools/artemis-http.cjs put --host $CONSOLE --path save:/v-text.txt --in text.txt
+uploaded 23 bytes -> save:/v-text.txt  sha256 d765ef6e5cb123ba…  (remote read-back verified)
+
+v-bin-4096.bin   4096 bytes  eecee203ffa2b470…  (remote read-back verified)
+v-bin-16384.bin 16384 bytes  5519aa0a79bf39b5…  (remote read-back verified)
+v-bin-65536.bin 65536 bytes  5ee317fd75c476b9…  (remote read-back verified)
+
+$ ... --no-verify
+uploaded 23 bytes -> save:/v-unverified.txt  sha256 d765ef6e5cb123ba…  (unverified)
+```
+
+Each file was then downloaded with the expected SHA-256, compared with `cmp`,
+and deleted with read-back confirmation:
+
+```
+text.txt       23 bytes MATCH d765ef6e5cb123bae5ed2cdcd706b6adb676953eb83e2b731dbb74771e948997
+bin-4096.bin 4096 bytes MATCH eecee203ffa2b470e17a21134983e05de12f41ff801c6e08e12e771befb67d41
+bin-16384.bin 16384 bytes MATCH 5519aa0a79bf39b5156c01563bdaba0d37c49a8d428dc818d325555c479d26fd
+bin-65536.bin 65536 bytes MATCH 5ee317fd75c476b98956d4f2437a47ed40ac442a64fc8516bac82fa0bc38e8fc
+deleted v-text.txt, v-bin-4096.bin, v-bin-16384.bin, v-bin-65536.bin, v-unverified.txt
+stat -> absent (all four checked)
+```
+
+An interrupted upload and a failed PUT (both covered offline) are reported as
+`EINCOMPLETE` with the partial byte count; a corrupted remote copy is refused
+with `EHASH`; a failed write is attempted once, never retried.

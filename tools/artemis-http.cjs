@@ -37,7 +37,9 @@ function parse(argv) {
     const token = argv[i];
     if (!token.startsWith('--')) { options._.push(token); continue; }
     const name = token.slice(2);
-    if (['json', 'force', 'atomic', 'no-resume'].includes(name)) { options[name] = true; continue; }
+    if (['json', 'force', 'atomic', 'no-resume', 'no-verify'].includes(name)) {
+      options[name] = true; continue;
+    }
     if (!valued.has(name)) usage('unknown option --' + name);
     const value = argv[++i];
     if (value === undefined) usage('--' + name + ' needs a value');
@@ -136,10 +138,12 @@ async function main() {
         overwrite: !!options.force,
         chunkSize: options.chunk ? Number(options.chunk) : undefined,
         atomic: !!options.atomic,
+        verify: !options['no-verify'],
       });
       if (options.json) console.log(JSON.stringify(got, null, 2));
       else console.log('uploaded ' + got.size + ' bytes -> ' + got.path + '  sha256 ' + got.sha256 +
-        (got.atomic ? ' (atomic)' : ''));
+        (got.verified ? '  (remote read-back verified)' : '  (unverified)') +
+        (got.atomic ? '  (atomic)' : ''));
       return EXIT.ok;
     }
     case 'rm': {

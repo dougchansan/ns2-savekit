@@ -294,13 +294,40 @@ class ArtemisHttp {
     return {path: target, size, sha256: digest};
   }
 
+  // Hash the remote file by reading it back through /eval. This is what makes
+  // an upload result truthful: a local hash alone only proves what was sent.
+  async digest(name, {chunkSize = DEFAULT_CHUNK} = {}) {
+    const {bare} = anyName(name);
+    const stat = await this.stat(bare);
+    if (!stat.exists) throw new ArtemisHttpError('ENOENT', 'save:/' + bare + ' does not exist');
+    const hash = crypto.createHash('sha256');
+    let offset = 0;
+    while (offset < stat.size) {
+      const want = Math.min(chunkSize, stat.size - offset);
+      const bytes = await this.readChunk(bare, offset, want);
+      if (bytes.length !== want) {
+        throw new ArtemisHttpError('EINCOMPLETE', 'short read while hashing ' + bare +
+          ' at ' + offset);
+      }
+      hash.update(bytes);
+      offset += bytes.length;
+    }
+    if (offset !== stat.size) {
+      throw new ArtemisHttpError('EINCOMPLETE', 'hashed ' + offset + ' of ' + stat.size + ' bytes');
+    }
+    return {size: stat.size, sha256: hash.digest('hex')};
+  }
+
   // Upload: direct /save up to the server cap; larger files as a first chunk
   // plus /eval appends. Chunked writes are not atomic (documented); `atomic`
   // uploads to a temporary name and uses os.rename only when probed working.
+  // `verify` reads the remote file back and compares its SHA-256 with the
+  // source buffer; the returned hash is the VERIFIED REMOTE hash.
   async upload(name, bytes, {overwrite = false, chunkSize = MAX_APPEND_CHUNK,
-    atomic = false} = {}) {
+    atomic = false, verify = true} = {}) {
     const {bare, full} = saveName(name);
     if (!Buffer.isBuffer(bytes)) bytes = Buffer.from(bytes);
+    const localSha256 = sha256(bytes);
     const existing = await this.stat(bare);
     if (existing.exists && !overwrite) {
       throw new ArtemisHttpError('EEXIST', 'save:/' + bare + ' exists; pass --force to overwrite');
@@ -312,21 +339,42 @@ class ArtemisHttp {
         (probe.reason || 'unknown'));
       target = '.' + bare + '.http-part';
     }
-    if (bytes.length <= SERVER_BODY_CAP - 1024) {
-      await this.putRaw(target, bytes);
-    } else {
-      await this.putRaw(target, bytes.subarray(0, SERVER_BODY_CAP - 1024));
-      let offset = SERVER_BODY_CAP - 1024;
-      while (offset < bytes.length) {
-        const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
-        await this.appendRaw(target, chunk);
-        offset += chunk.length;
+    let remoteSha256 = null;
+    try {
+      if (bytes.length <= SERVER_BODY_CAP - 1024) {
+        await this.putRaw(target, bytes);
+      } else {
+        await this.putRaw(target, bytes.subarray(0, SERVER_BODY_CAP - 1024));
+        let offset = SERVER_BODY_CAP - 1024;
+        while (offset < bytes.length) {
+          const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+          await this.appendRaw(target, chunk);
+          offset += chunk.length;
+        }
       }
-    }
-    const after = await this.stat(target);
-    if (!after.exists || after.size !== bytes.length) {
-      throw new ArtemisHttpError('ESIZE', 'uploaded size ' + (after.exists ? after.size : 'missing') +
-        ' != ' + bytes.length);
+      const after = await this.stat(target);
+      if (!after.exists || after.size !== bytes.length) {
+        throw new ArtemisHttpError('EINCOMPLETE',
+          'upload incomplete: ' + (after.exists ? after.size : 'missing') + ' of ' +
+          bytes.length + ' bytes at save:/' + target,
+          {partial: after.exists ? after.size : 0});
+      }
+      if (verify) {
+        const remote = await this.digest(target);
+        if (remote.size !== bytes.length || remote.sha256 !== localSha256) {
+          throw new ArtemisHttpError('EHASH', 'remote sha256 ' + remote.sha256.slice(0, 16) +
+            '… != local ' + localSha256.slice(0, 16) + '… at save:/' + target,
+            {partial: remote.size});
+        }
+        remoteSha256 = remote.sha256;
+      }
+    } catch (error) {
+      if (['EINCOMPLETE', 'EHASH', 'EATOMIC'].includes(error.code)) throw error;
+      const after = await this.stat(target).catch(() => null);
+      throw new ArtemisHttpError('EINCOMPLETE', 'upload did not complete: ' + error.message +
+        '; ' + (after && after.exists ? after.size : 0) + ' of ' + bytes.length +
+        ' bytes at save:/' + target, {cause: error.code,
+        partial: after && after.exists ? after.size : 0});
     }
     if (atomic) {
       const renamed = await this.renameRaw(target, bare, overwrite);
@@ -338,7 +386,13 @@ class ArtemisHttp {
       target = bare;
     }
     const check = await this.stat(bare);
-    return {path: full, size: check.size, sha256: sha256(bytes), atomic};
+    if (!check.exists || check.size !== bytes.length) {
+      throw new ArtemisHttpError('EINCOMPLETE', 'final size ' +
+        (check.exists ? check.size : 'missing') + ' != ' + bytes.length);
+    }
+    return {path: full, size: check.size,
+      sha256: remoteSha256 || localSha256,
+      localSha256, verified: !!remoteSha256, atomic};
   }
 
   async putRaw(bare, bytes) {

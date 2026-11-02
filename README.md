@@ -180,6 +180,8 @@ node tools/kit.cjs --http <console-ip>   # menu for the same transport
   resume state and local atomic promotion;
 - uploads are direct `/save` up to the server body cap, or chunked `/eval`
   appends above it (non-atomic: `os.rename` on `save:/` is refused on hardware);
+  the reported hash is read back from the console and compared, and an
+  interrupted upload is reported as incomplete;
 - the backup is **explicit-file, complete:false** - the server has no directory
   listing - so it cannot authorize a destructive full restore;
 - protected launcher files are refused for write/delete, and other titles' saves
@@ -223,7 +225,7 @@ node tests/test_titles.cjs           # name layers and the console cache (10)
 node tests/test_restore_manifest.cjs # generic restore path (6)
 node tests/test_artemis_launcher.cjs # alula launcher: staging, backups, receipts, rollback (43)
 node tests/test_delete_result.cjs    # delete result propagation (14)
-node tests/test_artemis_http.cjs     # HTTP transport, chunking, resume (20)
+node tests/test_artemis_http.cjs     # HTTP transport, chunking, resume (24)
 node tests/test_nso_verify.cjs       # NSO0 parsing, LZ4, hashes (13)
 node tests/test_smb_meta.cjs         # META name block surgery (5)
 sh   tests/test_inject_dryrun.sh     # injection builder/manifest (3)

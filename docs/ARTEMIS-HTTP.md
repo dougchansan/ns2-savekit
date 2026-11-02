@@ -81,8 +81,15 @@ size and SHA-256.
 - **Chunked uploads are not atomic.** Hardware proved `os.rename` on `save:/`
   returns `Operation not permitted`, so the temporary-name + rename path is
   refused (`EATOMIC`) rather than pretending. A chunked upload writes the target
-  directly; an interrupted one leaves a partial target, which `stat` will show
-  with the wrong size.
+  directly; an interrupted one is reported as `EINCOMPLETE` with the partial
+  byte count, never as success.
+- **The reported hash is the remote hash.** After the size check the transport
+  reads the file back through `/eval` and compares its SHA-256 with the source
+  (`EHASH` on mismatch). `--no-verify` skips the read-back and the result is
+  marked `verified:false`; the returned `localSha256` is then only the PC-side
+  buffer hash.
+- A failed PUT or append is not retried: the retry policy applies to read-only
+  requests (status/stat/read) only, so a non-idempotent write is attempted once.
 - Overwriting an existing file requires an explicit `--force` (the kit asks).
   Client and server both refuse the protected launcher files.
 - Uploads are size-checked with `stat`, then read back by `download` when the
@@ -119,6 +126,7 @@ the transcript.
 | Lua version / platform | `Lua 5.1` / `Ounce` |
 | upload/download text | 41 B, SHA-256 identical |
 | binary with NUL / 0xFF / 0x80 | 4 KiB, 16 KiB, **64 KiB** — all byte-identical |
+| upload hash | read back from the console and compared before reporting success |
 | 64 KiB path | chunked `/eval` append upload, 4 KiB-read download |
 | missing file | `stat` absent; `get` exits 9 `ENOENT` |
 | protected `core.lua` / `save9999.dat` | upload and delete refused (`EPROTECTED`) |
@@ -166,9 +174,11 @@ That changes the installed upstream launcher and its protected files, so it is
 
 ## Tests
 
-`node tests/test_artemis_http.cjs` — 20 offline tests against a local HTTP server
+`node tests/test_artemis_http.cjs` — 24 offline tests against a local HTTP server
 implementing the real endpoints and body cap. They cover status/health, eval
 errors, the body cap, stat, binary chunked download, resume after a failed
 chunk, hash/size refusal, 4/16/64 KiB uploads, overwrite authorization,
 protected refusals, delete verification, explicit-file backup, retry, timeout,
-connection failure, rename probe and atomic refusal.
+connection failure, rename probe and atomic refusal, remote-hash verification,
+corrupted uploads (`EHASH`), interrupted chunked uploads (`EINCOMPLETE`, partial
+size) and the no-retry rule for writes.
