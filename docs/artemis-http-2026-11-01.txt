@@ -1,0 +1,153 @@
+# Artemis HTTP transport — hardware transcript, 2026-11-01
+
+Console: retail Switch 2, firmware 23.0.1, Seedsow Lullaby Demo 1.0.0, Artemis
+Launcher installed. HTTP server started with button Y. **No ns2jb RPC session
+was used.** The console address is written as `$CONSOLE`; the account uid is not
+recorded here.
+
+## 1. Connection and Lua
+
+```
+$ node tools/artemis-http.cjs health --host $CONSOLE
+status   200  nora2hax/seedsow HTTP server
+lua      Lua 5.1
+platform Ounce
+engine   userdata
+
+$ node tools/artemis-http.cjs eval --host $CONSOLE --code 'print("hello world")'
+hello world
+
+$ node tools/artemis-http.cjs eval --host $CONSOLE --code 'print(_VERSION); print(_G.n2h.platform)'
+Lua 5.1
+Ounce
+```
+
+## 2. Uploads
+
+```
+text.txt       41 bytes  de4f9d6de5c0f18f988f31bc267ab415ae8700277f411150ae92b4d4661ccccc
+bin-4096.bin 4096 bytes  e87d333e5f9dc3d12c4e6445700267dcebf57d156ebece144915a0a3742c44cb
+bin-16384.bin 16384 bytes cb158df680b8ead69b547ca78deef580b70947827a4ea23210e09987866a4d16
+bin-65536.bin 65536 bytes 5cccb2465cf3b2a34201823de07586a765b009cba96601d684228250c9b3eebd
+```
+
+The 65536-byte file exceeds the server body cap and was sent as a first `/save`
+chunk followed by `/eval` appends; the other two used `/save` directly.
+
+## 3. Downloads
+
+Every file was downloaded with 4 KiB hex reads, a per-chunk hash and a final
+SHA-256, then compared byte-for-byte with the local source:
+
+```
+text.txt       downloaded 41    sha256 de4f9d6d…  MATCH
+bin-4096.bin   downloaded 4096  sha256 e87d333e…  MATCH
+bin-16384.bin  downloaded 16384 sha256 cb158df6…  MATCH
+bin-65536.bin  downloaded 65536 sha256 5cccb246…  MATCH
+```
+
+The binary fixtures contain NUL, 0xFF and 0x80 at fixed offsets; the comparison
+is `cmp`, not just the hash.
+
+## 4. Errors and refusals
+
+```
+stat present  -> present 41 bytes
+stat missing  -> absent
+get missing   -> FAILED[ENOENT] ... exit 9
+put core.lua  -> FAILED[EPROTECTED] ... exit 9
+rm save9999.dat -> FAILED[EPROTECTED] ... exit 9
+put save:/../escape -> FAILED[EPATH] ... exit 9
+```
+
+## 5. Atomic rename probe
+
+```
+{
+  "rename": { "ok": false, "reason": "save:/.ns2http-probe-a: Operation not permitted",
+              "overwrote": false },
+  "serverBodyCap": 28672
+}
+```
+
+`os.rename` on `save:/` is refused, so chunked uploads are written directly and
+are **not atomic**. `put --atomic` refuses with `EATOMIC` and removes its
+temporary file; the target is left absent.
+
+## 6. Explicit-file backup
+
+```
+$ node tools/artemis-http.cjs backup --host $CONSOLE --out backup/
+explicit-file backup: 9 files, 114443 bytes -> backup/
+scope is explicit-files; complete=false
+```
+
+Entries include `core.lua 54d25862dc0d7969…`, `inject.iet bf79a739584de93d…`
+and `save9999.dat ca47241097a25061…`, matching the staged payload.
+
+## 7. Relaunch
+
+Marker uploaded, game fully closed (HOME -> X -> A) and relaunched, Y pressed:
+
+```
+health: 200, Lua 5.1, Ounce
+marker downloaded: 35 bytes, sha256 62c9a3fc… — exact content
+bin-65536 downloaded: 65536 bytes, sha256 5cccb246… — MATCH
+```
+
+## 8. Cleanup
+
+All five disposable files deleted with read-back verification:
+
+```
+deleted hw-text.txt; read-back confirms absent
+deleted hw-bin-4096.bin; ...
+deleted hw-bin-16384.bin; ...
+deleted hw-bin-65536.bin; ...
+deleted hw-persist.txt; ...
+stat -> absent (all five); probe scratch names also absent
+```
+
+## 9. Legacy migration using the HTTP snapshot
+
+The HTTP backup is read-only evidence, not a rollback baseline. It was used to
+migrate the pre-receipt installation:
+
+```
+$ ARTEMIS_STATE=<local state> node tools/artemis-launcher.cjs migrate-legacy \
+    --title 010042d022aea000 --uid <full-uid> \
+    --backup <pre-install backup> --snapshot backup/ --confirm-migration
+migration attestation written: ...original.json
+rollback baseline: <pre-install backup> (pre-install, unchanged)
+identity evidence: config/uids.json
+installed payload verified against pinned b9e6de8… and the deterministic trigger
+transformation.
+```
+
+The original backup's `manifest.json` SHA-256 before and after migration was
+`ea2a2ab0c0cb27be…` — unchanged. The record points at the pre-install trigger
+`d149d71bf87f1608…`, while the installed trigger verified as `ca47241097a25061…`.
+
+Negative checks:
+
+```
+$ ... --uid <wrong-account>
+FAILED: migration refuses: provenance is not established
+  no independently verified account identity evidence   (exit 6)
+
+$ ... --snapshot <backup with tampered core.lua>
+FAILED: migration refuses: provenance is not established
+  /core.lua does not match the pinned release           (exit 6)
+```
+
+## 10. Enumeration probe
+
+```
+io.open("save:/","rb")      -> file handle
+f:read("*a")                -> nil (cannot read a directory)
+getmetatable(_G.e).__index  -> function (not enumerable)
+```
+
+No complete save listing exists over the current API. Backups are therefore
+explicit-file, not complete archives, and cannot authorize a destructive full
+restore.

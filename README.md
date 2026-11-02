@@ -62,7 +62,8 @@ scripts and prints the exact command before each one.
 | all saves (a) | list every archive the console's save index knows, cartridge saves included, no titledb |
 | pull batch (p) | pull the next pending archives from that inventory (default 5) |
 | launcher / editor | Artemis only: install the payload set or the Seedsow Lua Editor save |
-| alula launcher | Artemis demo only: install alula's upstream Artemis Launcher and record a receipt, verify it, or roll it back safely (the menu number moves with the title's other entries; read the label) |
+| alula launcher | Artemis demo only: install alula's upstream Artemis Launcher against an immutable original baseline, verify it, or roll it back safely (the menu number moves with the title's other entries; read the label) |
+| Artemis HTTP (`--http`) | no ns2jb session: health, Lua, stat, download, upload, delete and explicit-file backup over the launcher's port 8080 |
 
 writes are fenced:
 
@@ -158,6 +159,35 @@ node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <ui
   the backup/restore evidence and the known limits - including that the
   minus-at-startup update bypass was **not** observed on demo 1.0.0.
 
+## Artemis HTTP transport (no ns2jb)
+
+The installed Artemis Launcher serves `/status`, `/eval`, `/save` and `/delete`
+on port 8080. `tools/artemis-http.cjs` uses only those endpoints, so it works
+while the game is running and **no RPC session is held**:
+
+```sh
+node tools/artemis-http.cjs discover --subnet 192.168.1
+node tools/artemis-http.cjs health   --host <console-ip>
+node tools/artemis-http.cjs eval     --host <console-ip> --code 'print("hello world")'
+node tools/artemis-http.cjs get      --host <console-ip> --path save:/file.bin --out file.bin
+node tools/artemis-http.cjs put      --host <console-ip> --path save:/note.txt --in note.txt
+node tools/artemis-http.cjs rm       --host <console-ip> --path save:/note.txt
+node tools/artemis-http.cjs backup   --host <console-ip> --out backup/
+node tools/kit.cjs --http <console-ip>   # menu for the same transport
+```
+
+- downloads are bounded `/eval` hex reads with chunk hashes, a final SHA-256,
+  resume state and local atomic promotion;
+- uploads are direct `/save` up to the server body cap, or chunked `/eval`
+  appends above it (non-atomic: `os.rename` on `save:/` is refused on hardware);
+- the backup is **explicit-file, complete:false** - the server has no directory
+  listing - so it cannot authorize a destructive full restore;
+- protected launcher files are refused for write/delete, and other titles' saves
+  are not reachable.
+
+Full details, hardware results (4/16/64 KiB, binary, relaunch) and limitations:
+[docs/ARTEMIS-HTTP.md](docs/ARTEMIS-HTTP.md).
+
 ## troubleshooting
 
 | what you see | what it means | what to do |
@@ -193,6 +223,7 @@ node tests/test_titles.cjs           # name layers and the console cache (10)
 node tests/test_restore_manifest.cjs # generic restore path (6)
 node tests/test_artemis_launcher.cjs # alula launcher: staging, backups, receipts, rollback (36)
 node tests/test_delete_result.cjs    # delete result propagation (11)
+node tests/test_artemis_http.cjs     # HTTP transport, chunking, resume (20)
 node tests/test_nso_verify.cjs       # NSO0 parsing, LZ4, hashes (13)
 node tests/test_smb_meta.cjs         # META name block surgery (5)
 sh   tests/test_inject_dryrun.sh     # injection builder/manifest (3)
