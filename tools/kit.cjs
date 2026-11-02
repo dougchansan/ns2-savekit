@@ -748,10 +748,80 @@ async function titleLoop(session, title, uid) {
   }
 }
 
+// Artemis HTTP is a different transport: the console's game is running the
+// launcher's own HTTP server, not an ns2jb run folder. Only the four upstream
+// endpoints are used, and only this title's save is reachable.
+async function httpMenu(initialHost) {
+  let host = initialHost;
+  if (!host) host = await askDefault('Console IP running the Artemis Launcher (blank = back)');
+  if (!host) return;
+  for (;;) {
+    const task = await choose('Artemis HTTP  ' + host + '  (no ns2jb session)', [
+      {label: 'Health: status, Lua version, platform', value: 'health'},
+      {label: 'Run Lua code', value: 'eval'},
+      {label: 'Run a local Lua file', value: 'evalfile'},
+      {label: 'Stat a save file', value: 'stat'},
+      {label: 'Download a save file (hex /eval reads)', value: 'get'},
+      {label: 'Upload a save file', value: 'put'},
+      {label: 'Delete a save file', value: 'rm'},
+      {label: 'Backup known files (explicit-file, not complete)', value: 'backup'},
+      {label: 'Discover Artemis servers on a subnet', value: 'discover'},
+      {label: 'Change console IP', value: 'host'},
+      {label: 'Back to transport selection', value: 'back'},
+    ]);
+    if (closed || !task || task.value === 'back') return;
+    const call = (args) => run('artemis-http.cjs', args, {stdio: 'inherit'});
+    if (task.value === 'health') {
+      call(['health', '--host', host]);
+    } else if (task.value === 'eval' || task.value === 'evalfile') {
+      const value = task.value === 'eval'
+        ? await askDefault('Lua code (one line)')
+        : await askDefault('Local Lua file');
+      if (!value) continue;
+      call(['eval', '--host', host, task.value === 'eval' ? '--code' : '--file', value]);
+    } else if (task.value === 'stat') {
+      const target = await askDefault('Save path (e.g. save:/core.lua)');
+      if (target) call(['stat', '--host', host, '--path', target]);
+    } else if (task.value === 'get') {
+      const target = await askDefault('Save path');
+      const out = target ? await askDefault('Local output file') : '';
+      if (target && out) call(['get', '--host', host, '--path', target, '--out', out]);
+    } else if (task.value === 'put') {
+      const target = await askDefault('Save path (e.g. save:/notes.txt)');
+      const input = target ? await askDefault('Local input file') : '';
+      if (!target || !input) continue;
+      const force = await confirm('Overwrite if the file exists?');
+      call(['put', '--host', host, '--path', target, '--in', input].concat(force ? ['--force'] : []));
+    } else if (task.value === 'rm') {
+      const target = await askDefault('Save path to delete');
+      if (target && await confirm('Delete ' + target + ' from this save?')) {
+        call(['rm', '--host', host, '--path', target]);
+      }
+    } else if (task.value === 'backup') {
+      const out = await askDefault('Local backup directory');
+      if (out) call(['backup', '--host', host, '--out', out]);
+    } else if (task.value === 'discover') {
+      const subnet = await askDefault('Subnet (e.g. 192.168.1)');
+      if (subnet) call(['discover', '--subnet', subnet]);
+    } else if (task.value === 'host') {
+      host = await askDefault('Console IP');
+      if (!host) return;
+    }
+  }
+}
+
 async function main() {
   console.log('ns2-savekit - guided save data access for Switch 2');
   console.log(NOTICE + '\n');
-  const explicit = process.argv[2];
+  const httpAt = process.argv.indexOf('--http');
+  if (httpAt >= 0) {
+    const value = process.argv[httpAt + 1];
+    const host = value && !value.startsWith('--') ? value : null;
+    await httpMenu(host);
+    rl.close();
+    return;
+  }
+  const explicit = process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : null;
   let session = explicit ? path.resolve(explicit) : await pickSession();
   if (!session) return;
   console.log('session: ' + session + '\n');
