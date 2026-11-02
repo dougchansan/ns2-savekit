@@ -60,6 +60,27 @@ test('a successful delete needs commit 0 and a verified-absent reopen', () => {
   assert.strictEqual(isGone(stillThere.code), false);
 });
 
+test('a missing commit result is never success, even if the file is absent', () => {
+  const decision = decideDelete({fsResult: 0, commitResult: null, stillPresent: false});
+  assert.strictEqual(decision.reason, 'commit-missing');
+  assert.strictEqual(decision.code, EXIT.other);
+  assert.strictEqual(isGone(decision.code), false);
+});
+
+test('already-absent needs no commit but still needs a verified read-back', () => {
+  const unverified = decideDelete({fsResult: 0x202, commitResult: null, stillPresent: null});
+  assert.strictEqual(unverified.code, EXIT.other);
+  const gone = decideDelete({fsResult: 0x202, commitResult: null, stillPresent: false});
+  assert.strictEqual(gone.reason, 'already-absent');
+  assert.strictEqual(gone.code, EXIT.notFound);
+});
+
+test('a failed read-back never reports success', () => {
+  const decision = decideDelete({fsResult: 0, commitResult: 0, stillPresent: true});
+  assert.strictEqual(decision.reason, 'still-present');
+  assert.strictEqual(decision.code, EXIT.failed);
+});
+
 test('a commit failure is a commit exit even when the FS accepted the delete', () => {
   const decision = decideDelete({fsResult: 0, commitResult: 0x2ee002, stillPresent: false});
   assert.strictEqual(decision.reason, 'commit-failed');

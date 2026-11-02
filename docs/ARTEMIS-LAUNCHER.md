@@ -287,7 +287,11 @@ resumes: removed files are skipped and the preflight verifies what is left.
 
 `save-delete-root` exits non-zero when `DeleteFile` fails, reopens the file
 read-only and checks the root listing to prove it is absent; a missing file exits
-`10`, which restore treats as already done. The canonical FS result for "not
+`10`, which restore treats as already done. A successful deletion requires
+`DeleteFile == 0`, an explicit successful commit and a verified-absent
+read-back; a missing commit result is never treated as success. A successful deletion requires
+`DeleteFile == 0`, an explicit `Commit == 0` and a verified-absent read-back; a
+missing commit result is never treated as success. The canonical FS result for "not
 found" is `0x202` (module 1, description 2, the same value
 `save-write-stage.cjs` checks); a bare `0x2` is an unknown result and fails
 closed.
@@ -324,6 +328,26 @@ node tools/artemis-launcher.cjs migrate-legacy \
 It refuses if the snapshot is missing a launcher file, differs from the pinned
 release, has the wrong trigger, or if identity cannot be established. No
 destructive operation runs during migration.
+
+After migration, restore accepts the identity-less legacy backup **only**
+through a dedicated validation path: the backup's manifest SHA-256 and trigger
+must equal the immutable original record, the record's title/account must match,
+the installed payload must equal the pinned release, the trigger must equal a
+freshly recomputed deterministic transformation, and the migration attestation
+must name the same backup, trigger, installed-snapshot manifest, identity
+evidence and pinned upstream revision. A modern identity-bearing backup still
+goes through the strict identity check. Neither path invents identity or
+modifies the legacy backup.
+
+After migration, restore accepts the identity-less legacy backup **only**
+through a dedicated validation path: the backup's manifest SHA-256 and trigger
+must equal the immutable original record, the record's title/account must match,
+the installed payload must equal the pinned release, the trigger must equal a
+freshly recomputed deterministic transformation, and the migration attestation
+must name the same backup, trigger, installed-snapshot manifest, identity
+evidence and pinned upstream revision. A modern identity-bearing backup still
+goes through the strict identity check. Neither path invents identity or
+modifies the legacy backup.
 
 Without a record, `restore` refuses automatic cleanup. The only fallback is
 `--adopt-legacy`, which independently establishes ownership by requiring every
@@ -421,7 +445,7 @@ mount was above the fallback threshold, so that path was not the cause. The
 console was restored to the HOME menu by a power cycle after each wedged
 attempt; no save operation was issued in any of them, so nothing on the console
 changed. Validation for the new destructive paths is therefore **offline only**
-(36 installer tests + 11 delete-result tests). Still to prove on hardware: a
+(43 installer tests + 14 delete-result tests). Still to prove on hardware: a
 fresh identity-bearing pull feeding a receipt; receipt-driven restore
 preflight/`--dry-run`; refusal of a modified launcher file; `save-delete-root`
 propagation; and the post-rollback pull.

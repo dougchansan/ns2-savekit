@@ -559,6 +559,179 @@ async function run() {
     }
   });
 
+  await test('the full install/update/restore lifecycle keeps the original intact', async () => {
+    await withState(async () => {
+      const {record, backup, plan} = await originalFixture();
+      assert.strictEqual(launcher.installMode(null, liveFixture(plan.files), plan), 'first');
+      const file = receipts.originalPath(TITLE, UID);
+      await receipts.writeImmutable(file, record);
+      const baseline = fs.readFileSync(file);
+
+      // reinstall identical bytes -> no-op; no transaction
+      const live = liveFixture(plan.files);
+      assert.strictEqual(launcher.installMode(record, live, plan), 'noop');
+      assert.deepStrictEqual(fs.readFileSync(file), baseline);
+      assert.strictEqual((await receipts.listTransactions(TITLE, UID)).length, 0);
+
+      // update -> separate transaction; original untouched
+      const txOk = launcher.transactionRecord({title: TITLE_OBJ(), uid: UID, original: record,
+        originalSha: sha(baseline), live: snapshotFixture(plan.files), plan});
+      txOk.status = 'installed';
+      await receipts.writeTransaction(txOk);
+
+      // interrupted update -> install-failed transaction; original untouched
+      const liveChanged = liveFixture(plan.files);
+      liveChanged.entries.find(e => e.path === '/http.lua').sha256 = sha(Buffer.from('new build'));
+      assert.strictEqual(launcher.installMode(record, liveChanged, plan), 'update');
+      const txBad = launcher.transactionRecord({title: TITLE_OBJ(), uid: UID, original: record,
+        originalSha: sha(baseline),
+        live: {...liveChanged, dir: '/tmp/live-changed',
+          manifestSha256: sha(Buffer.from('live-changed'))}, plan});
+      txBad.id = 'interrupted';
+      txBad.status = 'install-failed';
+      await receipts.writeTransaction(txBad);
+      assert.deepStrictEqual(fs.readFileSync(file), baseline);
+      const txs = await receipts.listTransactions(TITLE, UID);
+      assert.deepStrictEqual(txs.map(t => t.status).sort(), ['install-failed', 'installed']);
+
+      // restore preflight accepts the original installed state and the tx pre-state
+      const candidates = launcher.candidateStates(record, txs);
+      assert.ok(candidates.some(state => launcher.stateMatchesLive(live, state.files)));
+      assert.ok(candidates.some(state => launcher.stateMatchesLive(liveChanged, state.files)));
+
+      // restore to the pre-first-install state
+      const target = launcher.restoreTarget(record, backup);
+      const restored = {entries: [{path: '/save9999.dat', size: 20,
+        sha256: record.backup.triggerSha256}]};
+      const analysis = launcher.analyzeRestore({live: restored, expectedFiles: record.installed,
+        original: record, progress: {trigger: 'done', deleted: target.deletePaths},
+        deletePaths: target.deletePaths});
+      assert.deepStrictEqual(analysis.problems, []);
+      assert.strictEqual(analysis.triggerAlreadyRestored, true);
+      const view = {backup: {triggerSha256: record.backup.triggerSha256},
+        installed: target.deletePaths.map(p => ({path: p, kind: 'add'}))};
+      assert.deepStrictEqual(launcher.postRestoreProblems({post: restored, receipt: view, backup}), []);
+      assert.deepStrictEqual(fs.readFileSync(file), baseline);
+    });
+  });
+
+  await test('a non-trigger replace file is not deleted by restore', async () => {
+    const {record, backup} = await originalFixture();
+    const custom = JSON.parse(JSON.stringify(record));
+    custom.installed.find(e => e.path === '/http.lua').kind = 'replace';
+    custom.installed.find(e => e.path === '/http.lua').originalSha256 = 'a'.repeat(64);
+    const target = launcher.restoreTarget(custom, backup);
+    assert.ok(!target.deletePaths.includes('/http.lua'));
+  });
+
+  await test('a malformed legacy receipt is refused rather than adopted', async () => {
+    const {record} = await originalFixture();
+    const broken = {...record, kind: receipts.KIND_RECEIPT, status: 'installed'};
+    broken.backup = {...broken.backup, manifestSha256: 'nope'};
+    const adopted = receipts.adoptLegacyReceipt(broken, {launcherFiles: launcher.LAUNCHER_FILES});
+    assert.ok(adopted.problems.length > 0);
+    assert.strictEqual(adopted.record, undefined);
+  });
+
+  // -------------------------------------- restore baseline (modern + migrated) --
+  await test('a migrated legacy baseline passes restore preflight', async () => {
+    const originalBackup = await loadValid(backupFixture({identity: false}));
+    const pinned = launcher.expectedHashes(TITLE_OBJ());
+    const trigger = sha(Buffer.from('retargeted trigger'));
+    const snapshot = snapshotFixture([
+      ...Object.entries(pinned).map(([p, hash]) => ({path: p, size: 10, sha256: hash})),
+      {path: '/save9999.dat', size: 20, sha256: trigger},
+    ]);
+    const built = launcher.buildMigrationRecord({title: TITLE_OBJ(), uid: UID, originalBackup,
+      snapshot, pinned, expectedTrigger: trigger, identityEvidence: ['config/uids.json']});
+    assert.deepStrictEqual(built.problems, []);
+    const retarget = async (input, output) => fs.writeFileSync(output, 'retargeted trigger');
+    const loaded = await launcher.loadOriginalBackupForRestore(built.record, TITLE_OBJ(), UID,
+      {retarget});
+    assert.deepStrictEqual(loaded.problems, []);
+    assert.strictEqual(loaded.ok, true);
+    assert.strictEqual(loaded.backup.manifestSha256, originalBackup.manifestSha256);
+  });
+
+  await test('migrated restore refuses a missing attestation or bad identity evidence', async () => {
+    const originalBackup = await loadValid(backupFixture({identity: false}));
+    const pinned = launcher.expectedHashes(TITLE_OBJ());
+    const trigger = sha(Buffer.from('retargeted trigger'));
+    const snapshot = snapshotFixture([
+      ...Object.entries(pinned).map(([p, hash]) => ({path: p, size: 10, sha256: hash})),
+      {path: '/save9999.dat', size: 20, sha256: trigger},
+    ]);
+    const built = launcher.buildMigrationRecord({title: TITLE_OBJ(), uid: UID, originalBackup,
+      snapshot, pinned, expectedTrigger: trigger, identityEvidence: ['config/uids.json']});
+    const retarget = async (input, output) => fs.writeFileSync(output, 'retargeted trigger');
+    for (const mutate of [
+      r => { delete r.attestation; },
+      r => { r.attestation.identityEvidence = []; },
+      r => { r.attestation.pinnedUpstream = 'f'.repeat(40); },
+      r => { r.attestation.verifiedTriggerSha256 = 'f'.repeat(64); },
+      r => { r.installed.find(e => e.path === '/core.lua').sha256 = 'f'.repeat(64); },
+    ]) {
+      const record = JSON.parse(JSON.stringify(built.record));
+      mutate(record);
+      const loaded = await launcher.loadOriginalBackupForRestore(record, TITLE_OBJ(), UID,
+        {retarget});
+      assert.strictEqual(loaded.ok, false, mutate.toString());
+    }
+  });
+
+  await test('migrated restore refuses a wrong account, title or changed backup', async () => {
+    const originalBackup = await loadValid(backupFixture({identity: false}));
+    const pinned = launcher.expectedHashes(TITLE_OBJ());
+    const trigger = sha(Buffer.from('retargeted trigger'));
+    const snapshot = snapshotFixture([
+      ...Object.entries(pinned).map(([p, hash]) => ({path: p, size: 10, sha256: hash})),
+      {path: '/save9999.dat', size: 20, sha256: trigger},
+    ]);
+    const built = launcher.buildMigrationRecord({title: TITLE_OBJ(), uid: UID, originalBackup,
+      snapshot, pinned, expectedTrigger: trigger, identityEvidence: ['config/uids.json']});
+    const retarget = async (input, output) => fs.writeFileSync(output, 'retargeted trigger');
+    assert.strictEqual((await launcher.loadOriginalBackupForRestore(built.record, TITLE_OBJ(),
+      'b'.repeat(32), {retarget})).ok, false, 'wrong account');
+    assert.strictEqual((await launcher.loadOriginalBackupForRestore(built.record,
+      launcher.titleFor('010012900d38a000'), UID, {retarget})).ok, false, 'wrong title');
+    fs.writeFileSync(path.join(originalBackup.dir, 'system.dat'), 'changed');
+    assert.strictEqual((await launcher.loadOriginalBackupForRestore(built.record, TITLE_OBJ(),
+      UID, {retarget})).ok, false, 'changed file');
+    // A valid manifest with different bytes for the trigger is still refused
+    // because it no longer matches the record.
+    const dir2 = backupFixture({identity: false});
+    const backup2 = await loadValid(dir2);
+    const built2 = launcher.buildMigrationRecord({title: TITLE_OBJ(), uid: UID,
+      originalBackup: backup2, snapshot, pinned, expectedTrigger: trigger,
+      identityEvidence: ['config/uids.json']});
+    fs.writeFileSync(path.join(dir2, 'save9999.dat'), 'other trigger');
+    assert.strictEqual((await launcher.loadOriginalBackupForRestore(built2.record, TITLE_OBJ(),
+      UID, {retarget})).ok, false, 'changed trigger');
+    fs.appendFileSync(path.join(dir2, 'manifest.json'), '\n');
+    assert.strictEqual((await launcher.loadOriginalBackupForRestore(built2.record, TITLE_OBJ(),
+      UID, {retarget})).ok, false, 'changed manifest');
+  });
+
+  await test('the modern identity-bearing baseline still validates unchanged', async () => {
+    const expected = launcher.expectedHashes(TITLE_OBJ());
+    const pinnedPlan = {
+      files: launcher.LAUNCHER_FILES.map(name => ({path: '/' + name, local: name,
+        size: 10, sha256: expected['/' + name], replace: false})).concat([
+        {path: '/save9999.dat', local: 'save9999.dat', size: 20,
+          sha256: sha(Buffer.from('installed trigger')), replace: true}]),
+      manifest: {}, conflicts: [],
+    };
+    const {record} = await originalFixture({plan: pinnedPlan});
+    const retarget = async (input, output) => fs.writeFileSync(output, 'installed trigger');
+    const loaded = await launcher.loadOriginalBackupForRestore(record, TITLE_OBJ(), UID, {retarget});
+    assert.deepStrictEqual(loaded.problems, []);
+    assert.strictEqual(loaded.ok, true);
+    const noIdentity = await originalFixture({backupDir: backupFixture({identity: false})});
+    const refused = await launcher.loadOriginalBackupForRestore(noIdentity.record, TITLE_OBJ(),
+      UID, {retarget});
+    assert.strictEqual(refused.ok, false, 'a modern record cannot use an identity-less backup');
+  });
+
   // -------------------------------------------------- editor/ns2jb compat --
   await test('editor and ns2jb files in the backup are untouched by the plan', async () => {
     const backup = await loadValid(backupFixture({extra: ['sscode004.lua']}));

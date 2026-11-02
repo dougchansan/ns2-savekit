@@ -630,6 +630,12 @@ function liveMatchesFiles(live, files) {
   return files.every(file => map.get(file.path) === file.sha256);
 }
 
+// What would install do with this original record and live state?
+function installMode(original, live, plan) {
+  if (!original) return 'first';
+  return liveMatchesFiles(live, plan.files) ? 'noop' : 'update';
+}
+
 async function originalDigest(title, uid) {
   return receipts.sha256(await fsp.readFile(receipts.originalPath(title.id, uid)));
 }
@@ -792,7 +798,7 @@ async function install(options) {
     throw new Failure(EXIT.conflict, 'refusing to overwrite files this installer does not own',
       plan.conflicts.map(c => '  ' + c.name + ': ' + c.reason));
   }
-  if (liveMatchesFiles(live, plan.files)) {
+  if (installMode(original, live, plan) === 'noop') {
     // Nothing to write. Verify the existing bytes rather than manufacturing a
     // transaction or touching the baseline.
     const checked = runStep('verify-save-manifest.cjs',
@@ -1006,8 +1012,11 @@ function stateMatchesLive(live, files) {
 // The pre-install target: launcher files that were not in the original backup
 // are removed; the trigger is restored from it.
 function restoreTarget(original, backup) {
-  const deletePaths = LAUNCHER_FILES.map(name => '/' + name)
-    .filter(p => !backup.names.has(p));
+  // Ownership comes from the original record: only files it added are removed.
+  // A file that replaced something pre-existing is not silently deleted.
+  const deletePaths = original.installed
+    .filter(entry => entry.kind === 'add')
+    .map(entry => entry.path);
   return {deletePaths, triggerSha256: original.backup.triggerSha256};
 }
 
@@ -1091,6 +1100,102 @@ function printRestoreAnalysis(analysis) {
   if (updates.length) console.log('  note: ' + updates.join(', '));
 }
 
+// A migrated installation keeps its pre-identity backup untouched: the
+// immutable original record carries the identity and provenance instead. This
+// helper accepts that narrow case only, and never weakens the modern path.
+// `retarget` is injectable so the provenance check can be tested offline.
+async function loadOriginalBackupForRestore(original, title, uid, options = {}) {
+  const retarget = options.retarget || retargetSave;
+  const problems = [];
+  const migrated = original.origin === 'migrated-legacy';
+  const checked = await validateBackup(original.backup.path, {
+    trigger: TRIGGER,
+    // Modern backups must carry full identity. A migrated legacy backup does
+    // not, and is accepted only through the attestation checks below.
+    requireIdentity: !migrated,
+    titleId: title.id,
+    uid,
+  });
+  if (!checked.ok) return {ok: false, problems: checked.problems};
+
+  if (!original.title || original.title.id !== title.id) {
+    problems.push('original record is for another title');
+  }
+  if (!original.account || original.account.uid !== uid) {
+    problems.push('original record is for another account');
+  }
+  if (checked.manifestSha256 !== original.backup.manifestSha256) {
+    problems.push('the backup manifest changed since the original record was written');
+  }
+  const triggerEntry = checked.entries.find(entry => entry.path === '/' + TRIGGER);
+  if (!triggerEntry || triggerEntry.sha256 !== original.backup.triggerSha256) {
+    problems.push('the backup trigger does not match the original record');
+  }
+
+  // Recompute the deterministic transform rather than trusting the record.
+  let expectedTrigger = null;
+  if (triggerEntry) {
+    let work = null;
+    try {
+      work = await fsp.mkdtemp(path.join(os.tmpdir(), 'artemis-restore-check-'));
+      const out = path.join(work, TRIGGER);
+      await retarget(path.join(checked.dir, TRIGGER), out);
+      expectedTrigger = await fileSha(out);
+    } catch (error) {
+      problems.push('could not recompute the expected trigger: ' + error.message);
+    } finally {
+      if (work) await fsp.rm(work, {recursive: true, force: true}).catch(() => {});
+    }
+  }
+  const installedTrigger = original.installed.find(e => e.path === '/' + TRIGGER);
+  if (!installedTrigger) problems.push('original record has no boot trigger entry');
+  else if (expectedTrigger && installedTrigger.sha256 !== expectedTrigger) {
+    problems.push('the installed trigger in the original record does not match the ' +
+      'deterministic transformation of the original trigger');
+  }
+
+  // The installed payload must be exactly the pinned release.
+  for (const [p, want] of Object.entries(expectedHashes(title))) {
+    const entry = original.installed.find(e => e.path === p);
+    if (!entry) problems.push('original record is missing ' + p);
+    else if (entry.sha256 !== want) problems.push(p + ' in the original record does not match ' +
+      'the pinned release');
+  }
+
+  if (migrated) {
+    const att = original.attestation;
+    if (!att || att.kind !== 'ns2-savekit/artemis-launcher-migration') {
+      problems.push('migrated record has no migration attestation');
+    } else {
+      if (!att.originalBackup || att.originalBackup.manifestSha256 !== original.backup.manifestSha256) {
+        problems.push('attestation does not name this original backup manifest');
+      }
+      if (!att.originalBackup || att.originalBackup.triggerSha256 !== original.backup.triggerSha256) {
+        problems.push('attestation does not name this original trigger');
+      }
+      if (!Array.isArray(att.identityEvidence) || att.identityEvidence.length === 0) {
+        problems.push('attestation has no identity evidence');
+      }
+      if (!/^[0-9a-f]{64}$/.test(String(att.installedSnapshot && att.installedSnapshot.manifestSha256 || ''))) {
+        problems.push('attestation has no installed-snapshot manifest hash');
+      }
+      if (att.pinnedUpstream !== UPSTREAM_COMMIT) {
+        problems.push('attestation was made for a different upstream revision');
+      }
+      if (expectedTrigger && att.verifiedTriggerSha256 !== expectedTrigger) {
+        problems.push('attestation trigger hash does not match the recomputed trigger');
+      }
+    }
+    if (!original.backup.identitySource) problems.push('migrated record has no identity source');
+  } else if (!checked.identity ||
+      checked.identity.programId !== title.id || checked.identity.uid !== uid) {
+    problems.push('backup identity does not match the requested title/account');
+  }
+
+  if (problems.length) return {ok: false, problems};
+  return {ok: true, backup: checked, expectedTrigger, problems: []};
+}
+
 // Rollback to the state before the FIRST install. The immutable original record
 // supplies the backup and trigger; transaction records only describe the live
 // state that is allowed to be removed.
@@ -1103,15 +1208,12 @@ async function restoreFromOriginal({options, title, session, uid, original}) {
     throw new Failure(EXIT.prereq, 'the original installation record failed validation',
       problems.map(p => '  ' + p));
   }
-  const backup = await loadBackup(original.backup.path, title, {requireIdentity: true, uid});
-  if (backup.manifestSha256 !== original.backup.manifestSha256) {
-    throw new Failure(EXIT.prereq, 'the original backup at ' + original.backup.path +
-      ' changed since the first install (manifest hash differs); refusing to restore from it');
+  const loaded = await loadOriginalBackupForRestore(original, title, uid);
+  if (!loaded.ok) {
+    throw new Failure(EXIT.prereq, 'the original backup failed restore validation',
+      loaded.problems.map(p => '  ' + p));
   }
-  const triggerEntry = backup.entries.find(entry => entry.path === '/' + TRIGGER);
-  if (!triggerEntry || triggerEntry.sha256 !== original.backup.triggerSha256) {
-    throw new Failure(EXIT.prereq, 'the original backup trigger does not match the record');
-  }
+  const backup = loaded.backup;
   const target = restoreTarget(original, backup);
   const transactions = await receipts.listTransactions(title.id, uid);
   const latest = transactions.length ? transactions[transactions.length - 1] : null;
@@ -1612,7 +1714,8 @@ module.exports = {
   EXIT, Failure, TITLES, UPSTREAM_COMMIT, UPSTREAM_FILES, LAUNCHER_FILES, TRIGGER,
   UPDATE_FILES, parseArgs, titleFor, pinnedFor, expectedHashes, verifyUpstream,
   buildManifest, writeManifest, analyzeReceiptState, analyzeRestore, postRestoreProblems,
-  candidateStates, restoreTarget, stateMatchesLive, preinstallProblems, installedEntries,
+  candidateStates, restoreTarget, stateMatchesLive, preinstallProblems, installMode,
+  installedEntries,
   originalRecord, transactionRecord, buildMigrationRecord, verifyLegacyStaging,
-  loadBackup, stageDirFor, stageTo, stageAndPlan,
+  loadOriginalBackupForRestore, retargetSave, loadBackup, stageDirFor, stageTo, stageAndPlan,
 };
