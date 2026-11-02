@@ -708,7 +708,7 @@ async function titleLoop(session, title, uid) {
       // A separate installer, not a replacement for option 4: option 4 writes
       // this repository's ns2jb launcher, this writes alula's Artemis Launcher.
       // Both own save9999.dat, so they are alternatives, not a pair.
-      items.splice(items.length - 2, 0,
+      items.splice(items.length - 1, 0,
         {label: 'Install alula Artemis Launcher               [save op]', value: 'alula'});
     }
     const task = await choose(titles.label(title) +
