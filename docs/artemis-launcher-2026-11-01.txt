@@ -182,3 +182,55 @@ GONE
 - minus held continuously through the resume, with an `inject2.lua` that writes
   `save:/inject2-ran.txt`: `inject2-ran.txt` was **present** after boot both
   times. The startup update bypass did not trigger; no hardware restore was run.
+
+## 9. Second HTTP validation — 2026-11-01 22:32 (no RPC session)
+
+The installed launcher was booted from the existing save; button Y started the
+server. No RPC session was involved. Console address is written as `$CONSOLE`.
+
+```
+GET /status                          -> 200, nora2hax/seedsow banner
+POST /eval print("hello world")      -> status: ok / output: hello world
+POST /eval print(_VERSION)           -> Lua 5.1
+POST /eval print(_G.n2h.platform)    -> Ounce
+POST /eval io/os/debug/loadstring    -> io=true os=true debug=true loadstring=true
+GET /nope                            -> 404 no such endpoint
+GET /eval                            -> 405 use POST /eval
+```
+
+Uniquely named disposable file (`artemis-http-20261101-2233.bin`, 39 bytes):
+
+```
+PUT   /save?path=save:/artemis-http-20261101-2233.bin
+      wrote 39 bytes to save:/artemis-http-20261101-2233.bin
+read  /eval io.open("save:/...") -> 39 bytes, exact content
+DEL   /delete?path=save:/artemis-http-20261101-2233.bin
+      deleted save:/artemis-http-20261101-2233.bin
+read  again -> GONE
+```
+
+Safety refusals:
+
+```
+PUT    /save?path=save:/core.lua    -> 400 attempted to modify protected file
+DELETE /delete?path=save:/core.lua  -> 400 attempted to modify protected file
+PUT    /save?path=../escape         -> 400 path escapes save:/
+```
+
+Installed-file integrity without RPC. A polynomial hash
+(`h = (h*131 + byte) mod 2^32`) was computed identically by the console's Lua
+and locally over the staged payload:
+
+```
+file            size    console hash   staged hash
+core.lua        19156   1619833061     1619833061
+exploita.lua       20   3396816408     3396816408
+http.lua        10915   2751963712     2751963712
+inject.iet        501   1964970987     1964970987
+inject.lua       4036   1893777622     1893777622
+proggy.ttf      41208    635907845      635907845
+save9999.dat    28400   3714976867     3714976867
+```
+
+Relaunch: HOME -> X -> A (close software), relaunch, launcher screen again,
+Y -> `GET /status` 200 and `POST /eval` -> `relaunch ok Ounce`.

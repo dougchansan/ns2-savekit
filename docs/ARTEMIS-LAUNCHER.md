@@ -323,6 +323,12 @@ The sanitised command/output transcript is
 | F. persistence | **partial** | close + relaunch -> launcher again; full power cycle + relaunch -> launcher again; minus at the menu -> recovery mode; **startup minus skip-update not observed** |
 | G. compatibility | **pass, with a documented conflict** | editor files byte-identical (289 unchanged); boot trigger is single-owner, so ns2jb boot is displaced until restore |
 
+The HTTP server and the installation were re-checked on 2026-11-01 22:32
+without an RPC session: `/status`, `/eval` (`hello world`, `Lua 5.1`, `Ounce`),
+a uniquely named save file written/read/deleted, protected-file and traversal
+refusals, close+relaunch, and a byte-for-byte hash match of all seven installed
+files against the staged payload (transcript section 9).
+
 Save evidence:
 
 - pre-install backup `saves/Seedsow-Lullaby-demo/user-<uid8>/2026-11-01_2055`:
@@ -351,20 +357,32 @@ save9999.dat  ca47241097a250615e6a1a5c263f86b16729691d91740754a791c6006e1cd63c
 ### Review-fix validation status (2026-11-01, after the hardware run)
 
 The staging, receipt, backup-integrity and delete-propagation fixes landed after
-this hardware run. No live RPC session was available to exercise them on the
-console. Three fresh-boot acquisitions failed at ns2jb stage 2/4:
+this hardware run. No live RPC session could be obtained: six fresh-boot
+acquisitions failed at ns2jb stage 2/4, each with a different timing miss.
 
 1. `Native batch did not terminate; resources retained`
 2. `Clean alias did not qualify within its attempt limit`
 3. `The bounded native leak contains no qualified, encodable link`
+4. `General-heap allocation changed while the cache was retained`
+5. `Overwrite missed the qualified canary`
+6. `Native batch did not terminate; resources retained` (second occurrence)
 
-The console was restored to the HOME menu by a power cycle after each wedged
+A further attempt used `NS2_TMP_FALLBACK=1` after a fresh power cycle; the tmp
+mount was above the fallback threshold, so that path was not the cause. The
+console was restored to the HOME menu by a power cycle after each wedged
 attempt; no save operation was issued in any of them, so nothing on the console
-changed. Validation for these changes is therefore **offline only** (32
-installer tests + 7 delete-result tests). Still to prove on hardware: a fresh
-identity-bearing pull feeding a receipt; receipt-driven restore
+changed. Validation for the new destructive paths is therefore **offline only**
+(32 installer tests + 7 delete-result tests). Still to prove on hardware: a
+fresh identity-bearing pull feeding a receipt; receipt-driven restore
 preflight/`--dry-run`; refusal of a modified launcher file; `save-delete-root`
 propagation; and the post-rollback pull.
+
+What *was* re-validated on hardware without a session (22:32): the installed
+launcher still boots, persists across close/relaunch, and its HTTP server
+answers `/status`, `/eval`, save upload/read/delete and the protected-file and
+path-traversal refusals. All seven installed files hash identically to the
+staged payload (transcript section 9). This proves the installation was not
+disturbed by the review work; it does not exercise the receipt/restore code.
 
 The Seedsow installation described above predates receipts, so its rollback uses
 the conservative `--adopt-legacy` path (live bytes must equal the pinned release)
