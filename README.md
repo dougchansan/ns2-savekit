@@ -62,6 +62,7 @@ scripts and prints the exact command before each one.
 | all saves (a) | list every archive the console's save index knows, cartridge saves included, no titledb |
 | pull batch (p) | pull the next pending archives from that inventory (default 5) |
 | launcher / editor | Artemis only: install the payload set or the Seedsow Lua Editor save |
+| alula launcher (8) | Artemis demo only: install alula's upstream Artemis Launcher, verify it, or roll it back |
 
 writes are fenced:
 
@@ -127,6 +128,36 @@ game look for `save9999.dat` at boot.
   backup; `tools/inject-launcher.sh` - backup, build, write, pull and verify.
 - the stub/body split is built and smoke-tested, not yet installed on hardware.
 
+### alula's Artemis Launcher (a separate launcher)
+
+[alula/switch-artemis-launcher](https://github.com/alula/switch-artemis-launcher)
+is a different thing from the payload above: a boot menu with a Hello World slot,
+an HTTP Lua server on port 8080 and a `<name>2.lua` update mechanism. kit option
+**8** installs it into a supported **demo** save; option 4 is unchanged.
+
+```sh
+node tools/artemis-launcher.cjs install <run> --title 010042d022aea000 \
+  --uid <uid> --backup <pre-install-backup> --confirm
+node tools/artemis-launcher.cjs verify  <run> --title 010042d022aea000 --uid <uid> \
+  --backup <pre-install-backup>
+node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <uid> \
+  --backup <pre-install-backup> --confirm-restore
+```
+
+- supported titles: `010042d022aea000` (Seedsow demo) and `010012900d38a000`
+  (Nora 2 demo). full games and other titles are refused.
+- the pinned upstream revision is downloaded at install time and every file is
+  checked against a recorded SHA-256; nothing third-party is bundled.
+- it writes 7 files: six upstream scripts/font plus a `save9999.dat` rebuilt from
+  the game's own suspend save, so no older upstream save container is written
+  over yours. `saveg.dat` and `system.dat` are not touched.
+- both launchers own `save9999.dat`, so only one can be the boot path at a time.
+  the editor's files are not touched and do not collide.
+- [docs/ARTEMIS-LAUNCHER.md](docs/ARTEMIS-LAUNCHER.md) has the compatibility
+  matrix, the 2026-11-01 hardware report (firmware 23.0.1, Seedsow demo 1.0.0),
+  the backup/restore evidence and the known limits - including that the
+  minus-at-startup update bypass was **not** observed on demo 1.0.0.
+
 ## troubleshooting
 
 | what you see | what it means | what to do |
@@ -160,6 +191,7 @@ node tests/test_console_names.cjs    # ns name read: services, buffers (11)
 node tests/test_content_names.cjs    # control-NCA name read (7)
 node tests/test_titles.cjs           # name layers and the console cache (10)
 node tests/test_restore_manifest.cjs # generic restore path (6)
+node tests/test_artemis_launcher.cjs # alula launcher: pins, staging, rollback (14)
 node tests/test_nso_verify.cjs       # NSO0 parsing, LZ4, hashes (13)
 node tests/test_smb_meta.cjs         # META name block surgery (5)
 sh   tests/test_inject_dryrun.sh     # injection builder/manifest (3)
