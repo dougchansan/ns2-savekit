@@ -74,6 +74,9 @@ writes are fenced:
 - one open, one commit, then every file is read back and hashed;
 - paths must be `/name`; `..`, nested paths and absolute paths are rejected.
 
+Elden Ring (`0400f5802371e000`) is on the write allowlist. Large save files are
+verified in 256 KiB reads, including the game's 2.5 MiB character files.
+
 several save operations per boot usually work; restart the console only if one
 actually fails. the one thing that reliably breaks the next session is leaving a
 previous one open (`--keep-open`, a diagnostic only).
