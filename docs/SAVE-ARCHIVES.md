@@ -72,6 +72,14 @@ node tools/pull-inventory.cjs <run> saves/from-inventory \
   --inventory saves/inventory.json --space 1 --type 1
 ```
 
+Each row is opened with `save-pull-root.cjs --exact`: its own uid (an all-zero
+uid included), space and type, with no fallback to another user or to the common
+save. A refusal such as `0xe02` is recorded against that row. A row is marked done
+only when the child's `manifest.json` names the same archive and lists no failed
+files; a done row from an earlier run whose manifest disagrees is put back to
+pending, and its folder is renamed to `<folder>.unverified-<time>` rather than
+removed.
+
 It defaults to a batch of up to **five** per run (`--limit 0` pulls every pending
 archive) and keeps `inventory-progress.json`, so a reboot resumes at the next
 entry. The batch stops at the first session loss. On 2026-11-01 one boot took 20

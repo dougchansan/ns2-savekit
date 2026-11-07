@@ -4,7 +4,7 @@
 //
 //   node save-pull-root.cjs <run-directory> <program-id> <output-directory> [uid-hex]
 //        [--space N] [--type N] [--rank N] [--index N] [--static-id N]
-//        [--all] [--list-only] [--list-uids] [--keep-open]
+//        [--all] [--list-only] [--list-uids] [--keep-open] [--exact]
 //
 // Why the promoted root: a normal application session gets FS 6400
 // (PermissionDenied) for another title's save. The exploit already promotes the
@@ -17,6 +17,12 @@
 // Cache/Temporary (attribute all-zero except Type). --all keeps going and pulls
 // every archive into its own subdirectory. It is opt-in because a long sweep is
 // what wedges a session (docs/RESULTS.md).
+//
+// --exact opens one archive and nothing else: the given uid (which may be all
+// zeros), --space, --type and the given or default rank/index/static id. There is
+// no account enumeration and no fallback to another user, the common uid 0 or
+// another type, so a refusal is reported as that archive's refusal. This is what
+// pull-inventory uses, because an inventory row already names exactly one archive.
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
@@ -61,7 +67,7 @@ async function main() {
   // `known` is what exists; `given` is what was passed. Testing membership of the
   // known set made every boolean flag true on every run (a pull that only listed uids
   // and exited 0), which is what made pull-all report six archives with no files.
-  const known = new Set(['--list-only', '--list-uids', '--keep-open', '--filetime', '--all']);
+  const known = new Set(['--list-only', '--list-uids', '--keep-open', '--filetime', '--all', '--exact']);
   const given = new Set(argv.filter(a => known.has(a)));
   const valued = ['--space', '--type', '--rank', '--index', '--static-id'];
   const value = {};
@@ -83,13 +89,21 @@ async function main() {
   if (!runDirectory || !programText || !outputDirectory) {
     console.error('usage: node save-pull-root.cjs <run-directory> <program-id> <output-directory> ' +
       '[uid-hex] [--space N] [--type N] [--rank N] [--index N] [--static-id N] ' +
-      '[--all] [--list-only]');
+      '[--all] [--list-only] [--exact]');
     process.exit(2);
   }
   const listOnly = given.has('--list-only');
   const listUids = given.has('--list-uids');
   const keepOpen = given.has('--keep-open');
   const all = given.has('--all');
+  const exact = given.has('--exact');
+  if (exact) {
+    if (all || listUids) throw Error('--exact opens one archive; it cannot be combined with --all or --list-uids');
+    if (!/^(0x)?[0-9a-f]{32}$/i.test(forcedUid || ''))
+      throw Error('--exact needs the archive uid as 32 hex digits (all zeros for a common/device save)');
+    if (value['--space'] === undefined || value['--type'] === undefined)
+      throw Error('--exact needs --space and --type');
+  }
   if (value['--space'] !== undefined && value['--space'] > 255) throw Error('--space is a u8');
   if (value['--type'] !== undefined && value['--type'] > 255) throw Error('--type is a u8');
   if (value['--rank'] !== undefined && value['--rank'] > 1) throw Error('--rank is 0 (Primary) or 1 (Secondary)');
@@ -123,7 +137,8 @@ async function main() {
   // Raw 16-byte AccountUid values. Do not round-trip them through BigInt hex:
   // an AccountUid is two little-endian u64s, so the numeric hex is byte-swapped.
   const uids = [];
-  try {
+  // An exact open names its uid; listing the console's users would only add fallbacks.
+  if (!exact) try {
     const acc = await s.openService('acc:u0');
     const init = await s.ipc('acc InitializeApplicationInfo', acc, 140, u64(0), {pid: true});
     if (init.result) throw Error('acc:u0 initialization failed: ' + code(init.result));
@@ -156,7 +171,9 @@ async function main() {
   const staticId = value['--static-id'] === undefined ? 0 : value['--static-id'];
   // uid 0 is savecommon for Account saves and the documented shape for Device/
   // Bcat/Cache; plan() orders it correctly and dedupes an explicit zero uid.
-  const candidates = plan({spaces, types, ranks, index, staticId, uids, all});
+  const candidates = exact
+    ? [{space: spaces[0], type: types[0], rank: ranks[0], index, staticId, uid: uids[0]}]
+    : plan({spaces, types, ranks, index, staticId, uids, all});
   if (all) console.error('--all: probing every selected space/type/rank/user; ' +
     'narrow with --space/--type if the session drops');
 
@@ -175,7 +192,8 @@ async function main() {
     }
     if (archives.length === 0) {
       throw Error('No save filesystem opened for 0x' + programId.toString(16) +
-        ' (tried ' + candidates.length + ' attribute combinations)');
+        (exact ? ' (exact ' + archiveText(candidates[0]) + ')'
+          : ' (tried ' + candidates.length + ' attribute combinations)'));
     }
 
     if (given.has('--filetime')) {
@@ -350,7 +368,7 @@ async function main() {
             programId: programId.toString(16).padStart(16, '0'),
             uid: archive.uid.toString('hex'),
             space: archive.space, type: archive.type, rank: archive.rank,
-            index: archive.index,
+            index: archive.index, staticId: String(archive.staticId), exact,
             files: state.files,
             bytes: state.bytes, partial: state.failed.length > 0,
             failed: state.failed, entries: state.entries}, null, 2) + '\n');

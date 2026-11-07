@@ -15,6 +15,13 @@
 // session loss, and --limit 0 pulls every pending archive. Progress lives in
 // <output>/inventory-progress.json, so after a reboot the next run continues with
 // the next archive instead of starting over.
+//
+// EXACT ARCHIVES. Each row is pulled with save-pull-root --exact: its own uid
+// (including an all-zero common/device uid), space and type, with no fallback to
+// another user or the common save. A row counts as done only when the child's
+// manifest names that same archive and lists no failed files. A done row from an
+// earlier run whose manifest does not match is put back to pending; its folder is
+// renamed aside (never deleted) so the earlier files stay available.
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
@@ -86,6 +93,31 @@ async function main() {
   try { progress = JSON.parse(await fsp.readFile(progressFile, 'utf8')); } catch { /* first run */ }
   progress.done ||= []; progress.absent ||= []; progress.failed ||= [];
   const key = e => `${e.space}:${e.type}:${e.uid}:${e.applicationId}:${e.id}`;
+  // Re-check every done row in scope against the manifest it left behind.
+  let reverify = 0;
+  for (const entry of entries) {
+    if (!progress.done.includes(key(entry))) continue;
+    const folder = path.join(output, folderFor(entry));
+    const problem = manifestProblem(folder, entry);
+    if (!problem) continue;
+    reverify++;
+    if (dryRun) {
+      console.log(`  would re-verify id=${entry.id}: ${problem}`);
+      continue;
+    }
+    let kept = '';
+    if (fs.existsSync(folder)) {
+      kept = `${folder}.unverified-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      if (fs.existsSync(kept)) throw Error('cannot keep previous files aside: ' + kept + ' exists');
+      await fsp.rename(folder, kept);
+    }
+    progress.done = progress.done.filter(k => k !== key(entry));
+    fail(progress, key(entry), `needs re-verification: ${problem}` +
+      (kept ? `; previous files kept in ${path.basename(kept)}` : ''));
+    console.log(`re-verifying id=${entry.id}: ${problem}` +
+      (kept ? ` (previous files kept in ${path.basename(kept)})` : ''));
+  }
+  if (reverify && !dryRun) await fsp.writeFile(progressFile, JSON.stringify(progress, null, 2) + '\n');
   const pending = entries.filter(e =>
     !progress.done.includes(key(e)) && !progress.absent.includes(key(e)));
 
@@ -108,15 +140,12 @@ async function main() {
   let pulled = 0, empty = 0, absent = 0, lost = false;
   for (const entry of queue) {
     const folder = path.join(output, folderFor(entry));
-    const args = [path.join(TOOLS, 'save-pull-root.cjs'), run, entry.applicationId, folder];
-    if (BigInt('0x' + entry.uid) !== 0n) args.push(entry.uid);
-    args.push('--space', String(entry.space), '--type', String(entry.type));
-    // Cache is the one type whose index is commonly non-zero. Only trust the
-    // decoded rank/index there until the other types are verified.
-    if (Number(entry.type) === 5) {
-      if (Number(entry.rank)) args.push('--rank', String(entry.rank));
-      if (Number(entry.index)) args.push('--index', String(entry.index));
-    }
+    // The row's own uid, even when it is all zeros: that is the common/device
+    // save, and leaving it out let the child try the console's users first.
+    const want = requested(entry);
+    const args = [path.join(TOOLS, 'save-pull-root.cjs'), run, entry.applicationId, folder, entry.uid,
+      '--exact', '--space', String(entry.space), '--type', String(entry.type),
+      '--rank', String(want.rank), '--index', String(want.index)];
     console.log(`\npulling ${titles.label(entry.applicationId)} ` +
       `${TYPES[entry.type] || entry.type} ${entry.size} bytes -> ${folder}`);
     const result = spawnSync(process.execPath, args,
@@ -128,7 +157,11 @@ async function main() {
     if (err) console.log(err.split('\n').slice(-4).join('\n'));
 
     // save-pull-root prints its "done:" line on stderr, not stdout.
-    if (result.status === 0 && /^done:/m.test(combined)) {
+    const problem = result.status === 0 && /^done:/m.test(combined) ? manifestProblem(folder, entry) : null;
+    if (result.status === 0 && /^done:/m.test(combined) && problem) {
+      fail(progress, key(entry), 'pulled archive does not match the inventory row: ' + problem);
+      console.log('pulled archive does not match this row (' + problem + '); not recorded as done');
+    } else if (result.status === 0 && /^done:/m.test(combined)) {
       const files = Number((combined.match(/done:\s*(\d+)\s*files/) || [])[1] || 0);
       pulled++;
       if (files === 0) {
@@ -178,6 +211,33 @@ async function main() {
 function fail(progress, key, error) {
   progress.failed = progress.failed.filter(f => f.key !== key);
   progress.failed.push({key, error, at: new Date().toISOString()});
+}
+
+// Cache is the one type whose index is commonly non-zero. Only trust the decoded
+// rank/index there until the other types are verified; every other row asks for
+// rank 0 / index 0 explicitly, which is what the child would default to.
+function requested(entry) {
+  const cache = Number(entry.type) === 5;
+  return {rank: cache ? Number(entry.rank) || 0 : 0, index: cache ? Number(entry.index) || 0 : 0};
+}
+
+// Why the manifest in `folder` is not a complete backup of `entry`, or null if it is.
+function manifestProblem(folder, entry) {
+  let m;
+  try { m = JSON.parse(fs.readFileSync(path.join(folder, 'manifest.json'), 'utf8')); }
+  catch (error) { return error.code === 'ENOENT' ? 'no manifest' : 'unreadable manifest'; }
+  const want = requested(entry);
+  const app = BigInt(entry.applicationId).toString(16).padStart(16, '0');
+  const mismatch = [];
+  if (String(m.programId).toLowerCase() !== app) mismatch.push(`program ${m.programId}`);
+  if (String(m.uid).toLowerCase() !== String(entry.uid).toLowerCase()) mismatch.push(`uid ${m.uid}`);
+  if (Number(m.space) !== Number(entry.space)) mismatch.push(`space ${m.space}`);
+  if (Number(m.type) !== Number(entry.type)) mismatch.push(`type ${m.type}`);
+  if (Number(m.rank) !== want.rank) mismatch.push(`rank ${m.rank}`);
+  if (Number(m.index) !== want.index) mismatch.push(`index ${m.index}`);
+  if (mismatch.length) return 'manifest names a different archive (' + mismatch.join(', ') + ')';
+  if (m.partial !== false || !Array.isArray(m.failed) || m.failed.length) return 'manifest records failed files';
+  return null;
 }
 
 function folderFor(entry) {
