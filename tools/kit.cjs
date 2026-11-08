@@ -641,6 +641,41 @@ const ARTEMIS_FILES = /\/(system\.dat|saveg\.dat|save[0-9]{4}\.dat)$/im;
 // tools/artemis-launcher.cjs, which refuses anything else before it writes.
 const ALULA_TITLES = new Set(['010042d022aea000', '010012900d38a000']);
 
+// The native Switch 2 edition has a different image and must not receive this
+// payload. The dedicated installer independently enforces this same title ID.
+const BALATRO_TITLE = '0100cd801ce5e000';
+
+async function balatroLauncher(session, title, uid, backup, action) {
+  if (title !== BALATRO_TITLE) return;
+  const args = [action, session, '--title', title, '--uid', uid];
+  if (action === 'install') {
+    if (!backup) backup = await doBackup(session, title, uid);
+    if (!backup) return;
+    args.push('--backup', backup);
+    echoCommand('node tools/balatro-launcher.cjs ' + [...args, '--dry-run'].map(quote).join(' '));
+    const plan = run('balatro-launcher.cjs', [...args, '--dry-run'], {stdio: 'inherit'});
+    if (!plan.ok) {
+      console.log('Plan failed; no launcher files were written.');
+      return;
+    }
+    if (!(await confirm('Install the launcher? Balatro will open it instead of gameplay'))) return;
+    args.push('--confirm');
+  } else {
+    const receipt = (await ask('Installation receipt path: ')).trim();
+    if (!receipt) return;
+    args.push('--receipt', path.resolve(receipt));
+    if (action === 'restore') {
+      if (!(await confirm('Remove the receipt-owned launcher files? The current save will be backed up first'))) return;
+      args.push('--confirm-restore');
+    }
+  }
+  echoCommand('node tools/balatro-launcher.cjs ' + args.map(quote).join(' '));
+  const result = run('balatro-launcher.cjs', args, {stdio: 'inherit'});
+  console.log(result.ok ? '\nBalatro ' + action + ' completed and verified' :
+    '\nBalatro ' + action + ' failed; keep the printed backups and receipt for recovery');
+  saveOpDone();
+}
+
 // 'all' only makes sense for a backup. Any other action needs one account, so it
 // resolves to the first account that actually has a save - never to the literal
 // string 'all', which used to be passed to the puller as if it were a uid.
@@ -711,6 +746,12 @@ async function titleLoop(session, title, uid) {
       items.splice(items.length - 1, 0,
         {label: 'Install alula Artemis Launcher               [save op]', value: 'alula'});
     }
+    if (title === BALATRO_TITLE) {
+      items.splice(items.length - 1, 0,
+        {label: 'Install Balatro Lua launcher                 [save op]', value: 'balatro-install'},
+        {label: 'Verify Balatro Lua launcher                  [save op]', value: 'balatro-verify'},
+        {label: 'Restore Balatro gameplay                     [save op]', value: 'balatro-restore'});
+    }
     const task = await choose(titles.label(title) +
       (artemis ? '\n  Artemis save detected' : '\n  no Artemis files in this save') +
       '\n  (each entry opens the save once; several in a row usually work - restart if one fails)', items);
@@ -738,6 +779,8 @@ async function titleLoop(session, title, uid) {
       await installLauncher(session, title, uid, backup);
     } else if (task.value === 'alula') {
       await installAlula(session, title, uid, backup);
+    } else if (task.value.startsWith('balatro-')) {
+      await balatroLauncher(session, title, uid, backup, task.value.slice('balatro-'.length));
     } else if (task.value === 'editor') {
       await installEditor(session, title, uid, backup);
     } else if (task.value === 'delete') {

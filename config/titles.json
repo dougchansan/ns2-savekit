@@ -4,6 +4,10 @@
     {
       "id": "0400f5802371e000",
       "name": "Elden Ring"
+    },
+    {
+      "id": "0100cd801ce5e000",
+      "name": "Balatro (Switch 1 edition)"
     }
   ],
   "names": {
@@ -13,7 +17,8 @@
     "01005eb012fe2000": "Wagamama High Spec (trial)",
     "0100b4b00f9f6000": "SmileBASIC 4 (demo)",
     "04008e001f098000": "Nintendo Switch Sports Resort",
-    "0400f5802371e000": "Elden Ring"
+    "0400f5802371e000": "Elden Ring",
+    "0100cd801ce5e000": "Balatro (Switch 1 edition)"
   },
   "example": {
     "write": [
