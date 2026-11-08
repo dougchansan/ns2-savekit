@@ -78,6 +78,12 @@ async function main() {
   const jobs = [];
   for (const entry of manifest.files) {
     const bytes = await fs.readFile(entry.local);
+    if (entry.size !== undefined)
+      check(Number.isSafeInteger(entry.size) && bytes.length === entry.size,
+        'Staged file size differs from the manifest: ' + entry.path);
+    if (entry.sha256 !== undefined)
+      check(typeof entry.sha256 === 'string' && /^[0-9a-f]{64}$/.test(entry.sha256) && sha(bytes) === entry.sha256,
+        'Staged file hash differs from the manifest: ' + entry.path);
     check(entry.path.startsWith('/') && !entry.path.includes('..') && !entry.path.includes('\0'),
       'Invalid save path: ' + entry.path);
     const rel = entry.path.slice(1);
@@ -195,6 +201,8 @@ async function main() {
       const opened = await filesystem.openFile(s, save, job.path);
       const present = !opened.result;
       if (!present) {
+        check((Number(opened.canonicalResult ?? opened.result) & 0x3fffff) === 0x202,
+          'Cannot establish whether ' + job.path + ' exists: ' + code(opened.result));
         check(!job.replace, 'Cannot replace ' + job.path + ': it is not in the save');
         continue;
       }
