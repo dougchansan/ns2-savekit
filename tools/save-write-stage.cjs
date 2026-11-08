@@ -9,6 +9,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
+const {hashFile} = require('./lib/verified-file-hash.cjs');
 
 function request(socketPath, command) {
   return new Promise((resolve, reject) => {
@@ -202,16 +203,16 @@ async function main() {
       check(!opened.result, 'Cannot open ' + job.path + ' to compare it');
       try {
         const size = Number(await filesystem.fileSize(s, opened.handle));
-        const live = await filesystem.readFile(s, opened.handle, 0, size);
+        const liveHash = await hashFile(s, filesystem, opened.handle, size);
         const backup = await fs.readFile(job.local);
         if (restore) {
           // Say exactly what changes: with --restore this log line is the record of
           // the overwrite, and the caller's pre-restore backup is the way back.
-          console.log('restore: ' + job.path + ' live ' + live.length + 'B ' +
-            sha(live).slice(0, 16) + '... -> ' + backup.length + 'B ' +
+          console.log('restore: ' + job.path + ' live ' + size + 'B ' +
+            liveHash.slice(0, 16) + '... -> ' + backup.length + 'B ' +
             sha(backup).slice(0, 16) + '...');
         } else {
-          check(sha(live) === sha(backup),
+          check(liveHash === sha(backup),
             'Live ' + job.path + ' differs from the backup; refusing to replace ' +
             '(use --restore --confirm-restore to put a backup back)');
           console.log('replace ok: live ' + job.path + ' matches the backup ('
@@ -254,9 +255,12 @@ async function main() {
       const opened = await filesystem.openFile(s, save, job.path);
       check(!opened.result, 'Verify could not open ' + job.path + ': ' + code(opened.result));
       const size = Number(await filesystem.fileSize(s, opened.handle));
-      const bytes = await filesystem.readFile(s, opened.handle, 0, size);
-      await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
-      const got = sha(bytes);
+      let got;
+      try {
+        got = await hashFile(s, filesystem, opened.handle, size);
+      } finally {
+        await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
+      }
       const ok = got === sha(job.bytes) && size === job.bytes.length;
       if (!ok) mismatches++;
       console.log('  ' + job.path.padEnd(30) + String(size).padStart(8) + '  ' +

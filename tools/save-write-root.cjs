@@ -9,6 +9,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
+const {hashFile} = require('./lib/verified-file-hash.cjs');
 
 function request(socketPath, command) {
   return new Promise((resolve, reject) => {
@@ -170,10 +171,11 @@ async function main() {
       const opened = await filesystem.openFile(s, save, '/' + target);
       check(!opened.result, 'Cannot open /' + target + ' to verify it');
       try {
-        const live = await filesystem.readFile(s, opened.handle, 0, Number(await filesystem.fileSize(s, opened.handle)));
+        const liveHash = await hashFile(s, filesystem, opened.handle,
+          Number(await filesystem.fileSize(s, opened.handle)));
         const backupPath = path.join(verifyDirectory, target);
         const backup = await fs.readFile(backupPath);
-        check(sha(live) === sha(backup),
+        check(liveHash === sha(backup),
           'Live /' + target + ' differs from the backup; refusing to replace');
         console.log('replace ok: live /' + target + ' matches the backup (' + sha(backup).slice(0, 16) + '...)');
       } finally {
@@ -200,6 +202,7 @@ async function main() {
       ? Object.fromEntries((await fs.readdir(verifyDirectory)).map(name =>
         [name, path.join(verifyDirectory, name)]))
       : {};
+    let targetVerified = false;
     for (const entry of listing) {
       const opened = await filesystem.openFile(s, save, '/' + entry.name);
       if (opened.result) {
@@ -208,14 +211,28 @@ async function main() {
         continue;
       }
       const size = Number(await filesystem.fileSize(s, opened.handle));
-      const bytes = await filesystem.readFile(s, opened.handle, 0, size);
-      await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
-      let expectedHash = null;
-      if (expected[entry.name]) expectedHash = sha(await fs.readFile(expected[entry.name]));
-      const match = expectedHash ? (expectedHash === sha(bytes) ? 'ok' : 'DIFFERS') : 'n/a';
-      console.log(`  ${entry.name.padEnd(14)} ${String(size).padStart(7)}  ${sha(bytes).slice(0, 16)}  ${
-        entry.name === savePath.replace(/^\//, '') ? '(' + (sha(bytes) === sha(data) ? 'written ok' : 'WRITE MISMATCH') + ')' : ''} ${match}`);
+      let got;
+      try {
+        got = await hashFile(s, filesystem, opened.handle, size);
+      } finally {
+        await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
+      }
+      const isTarget = entry.name === target;
+      // The target must match the replacement; only untouched files must still
+      // match the original backup used by the prewrite comparison.
+      let expectedHash = isTarget ? sha(data) : null;
+      if (!isTarget && expected[entry.name]) expectedHash = sha(await fs.readFile(expected[entry.name]));
+      const match = expectedHash ? (expectedHash === got ? 'ok' : 'DIFFERS') : 'n/a';
+      console.log(`  ${entry.name.padEnd(14)} ${String(size).padStart(7)}  ${got.slice(0, 16)}  ${
+        isTarget ? '(' + (got === expectedHash ? 'written ok' : 'WRITE MISMATCH') + ')' : ''} ${match}`);
+      if (isTarget) {
+        check(got === expectedHash, 'Written file differs after commit');
+        targetVerified = true;
+      } else if (expectedHash) {
+        check(got === expectedHash, 'Preserved file differs after commit');
+      }
     }
+    check(targetVerified, 'Written file was not found after commit');
   } finally {
     if (save !== null) await s.close(save).catch(() => s.handles.delete(save));
     await s.cleanup().catch(() => {});
