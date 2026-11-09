@@ -4,7 +4,7 @@
 //
 //   node save-pull-root.cjs <run-directory> <program-id> <output-directory> [uid-hex]
 //        [--space N] [--type N] [--rank N] [--index N] [--static-id N]
-//        [--all] [--list-only] [--list-uids] [--keep-open]
+//        [--all] [--exact] [--list-only] [--list-uids] [--keep-open]
 //
 // Why the promoted root: a normal application session gets FS 6400
 // (PermissionDenied) for another title's save. The exploit already promotes the
@@ -61,7 +61,7 @@ async function main() {
   // `known` is what exists; `given` is what was passed. Testing membership of the
   // known set made every boolean flag true on every run (a pull that only listed uids
   // and exited 0), which is what made pull-all report six archives with no files.
-  const known = new Set(['--list-only', '--list-uids', '--keep-open', '--filetime', '--all']);
+  const known = new Set(['--list-only', '--list-uids', '--keep-open', '--filetime', '--all', '--exact']);
   const given = new Set(argv.filter(a => known.has(a)));
   const valued = ['--space', '--type', '--rank', '--index', '--static-id'];
   const value = {};
@@ -83,7 +83,7 @@ async function main() {
   if (!runDirectory || !programText || !outputDirectory) {
     console.error('usage: node save-pull-root.cjs <run-directory> <program-id> <output-directory> ' +
       '[uid-hex] [--space N] [--type N] [--rank N] [--index N] [--static-id N] ' +
-      '[--all] [--list-only]');
+      '[--all] [--exact] [--list-only]');
     process.exit(2);
   }
   const listOnly = given.has('--list-only');
@@ -156,7 +156,12 @@ async function main() {
   const staticId = value['--static-id'] === undefined ? 0 : value['--static-id'];
   // uid 0 is savecommon for Account saves and the documented shape for Device/
   // Bcat/Cache; plan() orders it correctly and dedupes an explicit zero uid.
-  const candidates = plan({spaces, types, ranks, index, staticId, uids, all});
+  if (given.has('--exact') && (!forcedUid || uids.length !== 1 ||
+      spaces.length !== 1 || types.length !== 1 || ranks.length !== 1))
+    throw Error('--exact requires uid, --space, --type and a single rank');
+  const candidates = given.has('--exact')
+    ? [{space: spaces[0], type: types[0], rank: ranks[0], index, staticId, uid: uids[0]}]
+    : plan({spaces, types, ranks, index, staticId, uids, all});
   if (all) console.error('--all: probing every selected space/type/rank/user; ' +
     'narrow with --space/--type if the session drops');
 

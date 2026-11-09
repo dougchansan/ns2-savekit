@@ -23,6 +23,10 @@ fs.mkdirSync(path.join(tools, 'lib'), {recursive: true});
 fs.mkdirSync(path.join(tmp, 'config'), {recursive: true});
 fs.copyFileSync(path.join(ROOT, 'tools/kit.cjs'), path.join(tools, 'kit.cjs'));
 fs.copyFileSync(path.join(ROOT, 'tools/lib/titles.cjs'), path.join(tools, 'lib/titles.cjs'));
+fs.copyFileSync(path.join(ROOT, 'tools/lib/run-discovery.cjs'), path.join(tools, 'lib/run-discovery.cjs'));
+const fakeRun = path.join(tmp, 'run');
+fs.mkdirSync(path.join(fakeRun, 'switch2/ro/root'), {recursive: true});
+fs.writeFileSync(path.join(fakeRun, 'switch2/ro/root/current-root.json'), '{}');
 // A fresh cache stops titles.refresh() from reaching the network.
 fs.writeFileSync(path.join(tmp, 'config/titledb-cache.json'),
   JSON.stringify({'0100000000000001': 'Game A'}));
@@ -99,7 +103,7 @@ function kit(mode) {
   try { fs.unlinkSync(log); } catch { /* first run */ }
   // Three answers: title, then a blank to leave the title menu, then a blank at
   // the title prompt. More than enough, so no ask is left waiting for EOF.
-  const result = spawnSync(process.execPath, [path.join(tools, 'kit.cjs'), '/fake-run'],
+  const result = spawnSync(process.execPath, [path.join(tools, 'kit.cjs'), fakeRun],
     {encoding: 'utf8', input: '1\n\n\n', env: {...process.env, KIT_MODE: mode, KIT_LOG: log}});
   const probes = fs.existsSync(log)
     ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)

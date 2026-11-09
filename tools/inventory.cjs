@@ -12,7 +12,6 @@
 // Failures name the half that failed (applications or accounts) and pass the
 // child's own stderr through: the common causes (unpatched engine, stale run
 // folder, no live host) are invisible in the child's stdout.
-const fs = require('node:fs');
 const path = require('node:path');
 const {spawnSync} = require('node:child_process');
 const titles = require('./lib/titles.cjs');
@@ -66,19 +65,6 @@ function accounts(session) {
   return uids;
 }
 
-// Writability is a policy list, not something the console reports: config/
-// titles.local.json (this console) plus the titles.json template.
-function writable() {
-  const ids = new Set();
-  for (const name of ['titles.json', 'titles.local.json']) {
-    try {
-      const config = JSON.parse(fs.readFileSync(path.join(TOOLS, '..', 'config', name), 'utf8'));
-      for (const entry of config.write || []) ids.add(String(entry.id).toLowerCase());
-    } catch { /* optional */ }
-  }
-  return ids;
-}
-
 function main() {
   const [session, ...uidArgs] = process.argv.slice(2);
   if (!session) {
@@ -96,7 +82,6 @@ function main() {
     console.error('  node tools/inventory.cjs ' + JSON.stringify(session) + ' <uid>');
     process.exit(1);
   }
-  const allowed = writable();
   titles.refresh().then(refreshed => {
     const rows = [];
     for (const appId of apps) {
@@ -111,7 +96,6 @@ function main() {
           uid: uids[i],
           files: Number(match[1]),
           bytes: Number(match[2]),
-          writable: allowed.has(appId.toLowerCase()),
           state: Number(match[1]) === 0 ? 'empty' : (Number(match[1]) < 3 ? 'sparse' : 'ok'),
         });
       }
@@ -125,13 +109,13 @@ function main() {
     console.log('  game'.padEnd(wide + 2) + '  user  files      size  state  id');
     console.log('  ' + '-'.repeat(wide) + '  ----  -----  --------  -----  ----------------');
     for (const row of rows) {
-      console.log((row.writable ? '✔ ' : '  ') + row.game.padEnd(wide) + '  ' + String(row.user).padStart(4) + '  ' +
+      console.log('  ' + row.game.padEnd(wide) + '  ' + String(row.user).padStart(4) + '  ' +
         String(row.files).padStart(5) + '  ' + (row.bytes / 1048576).toFixed(1).padStart(6) + 'M  ' +
         row.state.padEnd(5) + '  ' + row.id);
     }
     const total = rows.reduce((sum, row) => sum + row.bytes, 0);
     console.log(`\n${rows.length} save archives, ${(total / 1048576).toFixed(1)} MiB total`);
-    console.log('✔ = the id is in config/titles.local.json, so it may be written to');
+    console.log('Any title may be written; every write requires interactive confirmation.');
     // A partial list looks like a bug unless the gap is named and actionable.
     const ids = [...new Set(rows.map(row => row.id))];
     const unnamed = titles.unnamed(ids);

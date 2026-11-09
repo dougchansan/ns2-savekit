@@ -55,18 +55,12 @@ Four steps, in this order, each verified before the next:
 The write is transactional and re-read afterwards: the log shows each path with the
 hash that was committed and read back, and any mismatch fails the run.
 
-## Allow-listing a title (required for writes)
+## Write confirmation
 
-Writes are refused unless the title is on the allow list, because a save write is
-destructive by nature. The built-in list is the disposable titles this kit was
-developed on. Add your own in `config/titles.local.json` (gitignored):
-
-```json
-{ "write": [ { "id": "01007ef00011e000", "name": "Breath of the Wild" } ] }
-```
-
-That id is BOTW's (US/EU). Check it on the console before trusting it: it is the id
-`list-apps` prints, and pulling it is a read-only way to confirm the save opens.
+Any Title ID may be written; no config allowlist is required. Every write requires
+interactive confirmation of the title, account, archive space/type and file paths
+before opening the archive read-write. The default is cancel. Piped input and
+`--confirm-restore` cannot bypass the prompt. Backup and live-file checks remain.
 
 ## Limits worth knowing before a BOTW restore
 

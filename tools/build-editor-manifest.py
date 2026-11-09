@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build a save-write-stage manifest that installs a flat save backup.
+"""Build a save-write-stage manifest that installs a save directory recursively.
 
   python3 build-editor-manifest.py <source-dir> <backup-dir> <out.json>
 
-Every non-hidden file in <source-dir> becomes an entry at the save root. A file
+Every non-hidden file in <source-dir> becomes an entry preserving its relative path. A file
 that already exists in <backup-dir> is marked replace=true, which makes
 save-write-stage.cjs verify the live bytes against that backup before it
 overwrites them; a file that is not in the backup is add-only.
@@ -22,19 +22,28 @@ def main(argv):
     if len(argv) != 4:
         sys.exit(__doc__)
     source, backup, out = argv[1:]
-    names = sorted(name for name in os.listdir(source)
-                   if not name.startswith('.'))
+    names = []
+    for root, dirs, entries in os.walk(source, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
+        for name in dirs + entries:
+            full = os.path.join(root, name)
+            if os.path.islink(full):
+                sys.exit('refusing symlink: ' + full)
+        for name in sorted(entries):
+            if name.startswith('.'):
+                continue
+            rel = os.path.relpath(os.path.join(root, name), source)
+            if any(not SAFE.fullmatch(part) for part in rel.split(os.sep)):
+                sys.exit('refusing unsafe entry: ' + rel)
+            names.append(rel)
     if not names:
         sys.exit('no files in ' + source)
-    present = set(os.listdir(backup)) if os.path.isdir(backup) else set()
     files, total, replaced = [], 0, 0
-    for name in names:
-        if not SAFE.match(name) or os.path.isdir(os.path.join(source, name)):
-            sys.exit('refusing unsafe or nested entry: ' + name)
+    for name in sorted(names):
         size = os.path.getsize(os.path.join(source, name))
         total += size
-        entry = {'path': '/' + name, 'local': os.path.join(source, name)}
-        if name in present:
+        entry = {'path': '/' + name.replace(os.sep, '/'), 'local': os.path.join(source, name)}
+        if backup != '-' and os.path.isfile(os.path.join(backup, name)):
             entry['replace'] = True
             replaced += 1
         files.append(entry)

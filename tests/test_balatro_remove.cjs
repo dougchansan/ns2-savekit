@@ -232,3 +232,22 @@ test('empty manifest performs no console operations and actual whitelist has twe
   assert.deepEqual(f.events, []);
   assert.deepEqual(validateManifest(f.manifest, UID.toUpperCase(), true), []);
 });
+
+
+test('CLI flags and piped yes do not bypass interactive removal confirmation', t => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const {spawnSync} = require('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'balatro-confirm-'));
+  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  const file = path.join(dir, 'remove.json');
+  const f = fixture();
+  fs.writeFileSync(file, JSON.stringify(f.manifest));
+  const r = spawnSync(process.execPath, [path.join(__dirname, '../tools/balatro-remove.cjs'),
+    path.join(dir, 'no-console-run'), UID, file, '--confirm'], {input: 'yes\n', encoding: 'utf8'});
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /interactive confirmation required/);
+  assert.ok(r.stdout.includes(TITLE_ID) && r.stdout.includes(UID) && r.stdout.includes(names[0]));
+  assert.doesNotMatch(r.stderr, /ENOENT/);
+});

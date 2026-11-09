@@ -14,7 +14,7 @@ const temporary = [];
 test.after(async () => { for (const dir of temporary) await fs.rm(dir, {recursive: true, force: true}); });
 
 async function root() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'balatro-launcher-test-'));
+  const dir = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'balatro-launcher-test-'));
   temporary.push(dir);
   return dir;
 }
@@ -67,6 +67,9 @@ async function system(settings = {}) {
     if (script === 'save-pull-root.cjs') {
       assert.equal(args[1], TITLE);
       assert.equal(args[3], UID);
+      assert.ok(args.includes('--exact'));
+      for (const [flag, value] of [['--space', '1'], ['--type', '1'], ['--rank', '0'], ['--index', '0']])
+        assert.equal(args[args.indexOf(flag) + 1], value);
       await backup(args[2], live, settings.incomplete ? {partial: true} : {});
     } else if (script === 'save-write-stage.cjs') {
       const manifest = JSON.parse(await fs.readFile(args[4], 'utf8'));

@@ -3,13 +3,20 @@ name: offline tests
 on:
   pull_request:
   push:
-    branches: [main, 'feature/**']
+    branches: [main, local-modifications, 'feature/**']
 
 jobs:
   tests:
     runs-on: ubuntu-latest
+    env:
+      NS2JB_ROOT: ${{ github.workspace }}/.test-ns2jb
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: x43x61x69/ns2jb
+          ref: 206a4f01826154eea00f1664f10819e0e7e856e5
+          path: .test-ns2jb
       - uses: actions/setup-node@v4
         with:
           node-version: '20'

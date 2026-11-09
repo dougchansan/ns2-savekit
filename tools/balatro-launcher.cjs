@@ -84,7 +84,7 @@ function createLauncher({release = releaseModule, run = runStep, log = console.l
 
   async function pull(runDirectory, uid, directory) {
     await run('save-pull-root.cjs', [path.resolve(runDirectory), TITLE_ID, directory, uid,
-      '--space', '1', '--type', '1']);
+      '--space', '1', '--type', '1', '--rank', '0', '--index', '0', '--exact']);
     return checkedBackup(directory, uid);
   }
 

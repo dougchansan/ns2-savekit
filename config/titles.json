@@ -1,15 +1,5 @@
 {
-  "comment": "Program IDs this toolkit may WRITE to. Anything not listed is refused before a handle opens. Copy the entries you want into config/titles.local.json (gitignored) so your own console's ids never land in version control. The names map is safe to keep: title ids are global, and demos/trials need it because titledb has a null id for them. list-apps names titles from the console's own control data and caches that in config/titles.nacp.json (gitignored); a name here overrides both.",
-  "write": [
-    {
-      "id": "0400f5802371e000",
-      "name": "Elden Ring"
-    },
-    {
-      "id": "0100cd801ce5e000",
-      "name": "Balatro (Switch 1 edition)"
-    }
-  ],
+  "comment": "Title names and local overrides. Any title may be written after interactive confirmation; no write allowlist is used. Legacy write entries are read only as name hints. Console names are cached in config/titles.nacp.json; explicit names override the cache.",
   "names": {
     "010042d022aea000": "Seedsow Lullaby (demo)",
     "0100ee5021c9e000": "Seedsow Lullaby (full)",
@@ -18,14 +8,12 @@
     "0100b4b00f9f6000": "SmileBASIC 4 (demo)",
     "04008e001f098000": "Nintendo Switch Sports Resort",
     "0400f5802371e000": "Elden Ring",
-    "0100cd801ce5e000": "Balatro (Switch 1 edition)"
+    "0100cd801ce5e000": "Balatro (Switch 1 edition)",
+    "0400486024DEC000": "The Legend of Zelda: Ocarina of Time"
   },
   "example": {
-    "write": [
-      {
-        "id": "0100000000000000",
-        "name": "your disposable title"
-      }
-    ]
+    "names": {
+      "0400486024DEC000": "The Legend of Zelda: Ocarina of Time"
+    }
   }
 }

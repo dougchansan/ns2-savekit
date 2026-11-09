@@ -56,6 +56,13 @@ async function probe({wrongSize = false, wrongHash = false, openResult = 0x202} 
       if (name === 'node:fs') return {readFileSync: () => '{"write":[{"id":"0100cd801ce5e000"}]}'};
       if (name === 'node:path' || name === 'node:crypto') return require(name);
       if (name === 'node:net') return net;
+      if (name === './lib/save-attr.cjs') return require('../tools/lib/save-attr.cjs');
+      if (name === './lib/write-policy.cjs') return {
+        validateSavePath: require('../tools/lib/write-policy.cjs').validateSavePath,
+        allowRisk: async (ok, message) => {if (!ok) throw Error(message);},
+        // Simulate an affirmative terminal response at the plan prompt.
+        confirmWrite: async () => {},
+      };
       if (name === './lib/verified-file-hash.cjs') return {hashFile};
       if (name.endsWith('/app/session.cjs')) return {Session};
       if (name.endsWith('/app/filesystem.cjs')) return {async openFile() {return {result: openResult};}};

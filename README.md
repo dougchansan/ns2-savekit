@@ -13,10 +13,27 @@ title you own.
 
 the kit also installs external launchers from pinned releases, including
 [Balatro's Lua launcher](docs/BALATRO-LAUNCHER.md) for the Switch 1 edition on a
-Switch 2. its save files are downloaded and verified at install time.
+Switch 2. its payload files are downloaded and verified at install time.
 
 the exploit is **not** here. nothing in this repo is exploit code, keys, or game
 content.
+
+## offline validation
+
+Clone the companion host alongside this checkout as `ns2jb`, or set
+`NS2JB_ROOT=/path/to/ns2jb`, then run:
+
+```sh
+node --test tests/test_*.cjs
+python3 tests/test_offline.py
+lua tests/test_payload_lua.lua
+lua tests/test_metadata_lua.lua
+sh tests/test_inject_dryrun.sh
+```
+
+Validated locally: the Node, Python and Lua suites passed. Real-sample Lua cases and the shell dry run skip when their optional
+local fixtures are absent. CI pins the companion engine to commit
+`206a4f01826154eea00f1664f10819e0e7e856e5` for reproducibility.
 
 ## what you need
 
@@ -59,29 +76,50 @@ scripts and prints the exact command before each one.
 | menu | what it does |
 | --- | --- |
 | list | list the files in a save (read-only) |
-| backup | pull the save into `saves/<game>/user-<uid>/<timestamp>` |
+| backup | pull the save into `saves/<game>/user-<uid>/<timestamp>`, then offer comparison (default: yes) |
 | replace | write files from a directory, in one transaction |
 | delete | remove one file at the save root |
 | verify | pull again and compare every file with the backup |
-| all saves (a) | list every archive the console's save index knows, cartridge saves included, no titledb |
+| all saves (a) | list and select archives from the console's save index, including uninstalled/cartridge games; open file actions for the selected game archive |
 | pull batch (p) | pull the next pending archives from that inventory (default 5) |
 | launcher / editor | Artemis only: install the payload set or the Seedsow Lua Editor save |
 | alula launcher | Artemis demo only: install alula's upstream Artemis Launcher against an immutable original baseline, verify it, or roll it back safely (the menu number moves with the title's other entries; read the label) |
-| Balatro launcher | Switch 1 Balatro only: install the pinned Lua launcher, verify its files, or restore gameplay using the original installation receipt |
+| Balatro launcher | Switch 1 edition only: install the pinned Lua launcher, verify its files, or restore gameplay with the installation receipt |
 | Artemis HTTP (`--http`) | no ns2jb session: health, Lua, stat, download, upload, delete and explicit-file backup over the launcher's port 8080 |
 
-writes are fenced:
+ns2jb writes use one commit and read back every written file to verify its hash.
+Any Title ID may be written without a config entry. Every ns2jb write or delete
+requires interactive confirmation showing the title, account and affected paths
+(default: cancel), including direct CLI use and restores. Piped input and flags
+such as `--confirm-restore` do not bypass this prompt. Missing backups, changed
+live bytes and unexpected existing files still require separate confirmation. Use `-` for
+no backup in `save-write-stage.cjs`; the single-file writer's backup is optional.
+Replace preserves relative subdirectories, e.g. `slots/0/save.dat` becomes
+`/slots/0/save.dat`. Empty segments, `.`/`..`, backslashes and control characters
+are rejected. Launcher installers retain their own baseline requirements.
 
-- read-only by default; a write needs a prior backup and compares the live
-  bytes against it before replacing anything;
-- only titles on the allowlist (`config/titles.json`, plus your
-  `config/titles.local.json`) can be written;
-- one open, one commit, then every file is read back and hashed;
-- single-file root tools require `/name`; installer/stage paths are validated
-  separately and may include the subdirectories their payload requires.
+Artemis HTTP addresses only the launcher's currently mounted save, not another
+title/account. For example:
 
-Elden Ring (`0400f5802371e000`) is on the write allowlist. Large save files are
-verified in 256 KiB reads, including the game's 2.5 MiB character files.
+```sh
+node tools/artemis-http.cjs put --host <console-ip> --path save:/custom.dat --in ./custom.dat --force
+```
+
+`--force` permits overwriting. The HTTP transport accepts flat filenames only
+and rejects protected launcher/save files; it has no title/account selector.
+
+The session menu defaults to the newest discovered run: press Enter to select it.
+The archive menu preserves the selected UID, space, type, rank and index for list,
+backup, replace, delete and verification. Backups are separated by archive ID.
+System archives without a verified static save ID are shown but cannot be opened
+from this menu. After a backup, press Enter at `[Y/n]` to pull again and compare
+file hashes, or enter `n` to skip.
+
+Run discovery searches the current directory and repository ancestors for
+`runs`, `ns2jb/runs` and `ns2jb-rpc/runs`. Set `NS2_RUNS` to a runs directory (or
+one run), or pass a run directly. A discovered RPC run without
+`switch2/ro/root/current-root.json` is shown as root not ready; save operations
+still require that promoted root.
 
 several save operations per boot usually work; restart the console only if one
 actually fails. the one thing that reliably breaks the next session is leaving a
@@ -245,7 +283,6 @@ Full details, hardware results (4/16/64 KiB, binary, relaunch) and limitations:
 | `ListAllUsers: transport 0xf601` | the engine has no CMIF pointer descriptors; not a console fault | apply the patches and start a new run |
 | `SESSION LOST` / `transport 0xf601` during a pull or write | the console stopped answering | restart the console, reopen SmileBASIC, start a new session |
 | `NO LIVE HOST` / `memory.sock` | the session folder is stale or gone | start the host again and use the run folder it prints |
-| title listed without `✔` | it is not on your write allowlist | add its id to `config/titles.local.json` |
 | names are missing, ids only | the console gave no name for that id (no control data, or the read was refused) and titledb is a Switch 1 catalogue, so it cannot name a Switch 2 title | paste the stub the tools print into `config/titles.local.json`; console names that were read are cached in `config/titles.nacp.json` |
 
 ## tests
@@ -253,6 +290,9 @@ Full details, hardware results (4/16/64 KiB, binary, relaunch) and limitations:
 offline, no console, no network:
 
 ```sh
+node tests/test_write_confirmation.cjs # mandatory write/delete confirmation (18)
+node tests/test_write_policy.cjs      # paths, backups and recursive replace
+node tests/test_kit_archives.cjs      # session defaults, archive actions, backup comparison
 node tests/test_kit_probe.cjs        # kit save detection (5)
 node tests/test_inventory.cjs        # inventory reporting (7)
 node tests/test_save_attr.cjs        # save attribute packing (9)
@@ -280,7 +320,7 @@ python3 tests/test_offline.py        # save/ASB encoders (8)
 tools/     pull/write/restore/list/inventory, ASB encoder, launcher builders
 payloads/  Lua that runs inside the game: launcher stub, body, metadata
 patches/   the engine patches the tools need (apply before the first run)
-config/    write allowlist template (local config files are gitignored)
+config/    title names and local overrides (local config files are gitignored)
 docs/      LAUNCHER, RESTORE, SAVE-ARCHIVES, TECHNICAL, PATCHED-ENGINE, RESULTS
 tests/     offline suites; none of them prove console behaviour
 ```
@@ -289,7 +329,60 @@ the controller/esp32 work lives in
 [ns2-console](https://github.com/dougchansan/ns2-console); the content/asset
 pipeline is in [ns2-assets](https://github.com/dougchansan/ns2-assets).
 
+## Update history
+
+Times below use UTC+08:00 (Asia/Taipei) and record when changes were committed
+in this fork. The base is
+[dougchansan/ns2-savekit](https://github.com/dougchansan/ns2-savekit) at `700814f`.
+
+### 2026-11-09 15:34 — Balatro launcher and upstream synchronization
+
+- Merge upstream `9d8ba7f`, including the pinned Balatro Switch 1 Lua launcher
+  with plan, stage, install, verify and receipt-based rollback commands.
+- Add the three Balatro actions to the title menu for the supported primary
+  account archive; preserve existing archive-specific actions and confirmation.
+- Pull the exact account archive for installation backups and verification.
+- Require interactive confirmation for receipt-owned launcher removal, including
+  direct CLI use; keep the original gameplay backup and third-party notices.
+- Add dated, bulleted update sections to both repository READMEs.
+- Resolve the system temporary directory in Balatro tests so macOS `/var`
+  symlinks do not cause false failures.
+- Direct SaveKit installation and rollback still require hardware validation.
+
+### 2026-11-09 15:25 — upstream fixes and documentation
+
+- Port large-file hash verification from upstream `123edd8`: read back in
+  chunks of at most 256 KiB for staged writes and the single-file wrapper.
+- Port manifest integrity checks from `975a59b`: validate optional file size
+  and SHA-256 before opening a console session.
+- Accept only canonical path-not-found replies when establishing that an add
+  target is absent; other open failures stop the operation.
+- Add regression tests for changed/identical replacements, stale backups,
+  corrupt or missing read-backs, bounded reads and manifest integrity.
+- Reduce personal attribution to one credits entry and use functional headings.
+- Retain the shared staged writer, which already compares committed targets
+  with their replacement bytes, covering upstream `0b28b4f`.
+
+### 2026-11-09 15:14–15:15 — initial integration
+
+- Discover runs across workspace ancestors and `NS2_RUNS`; select the newest
+  discovered run by default.
+- Preserve archive selectors through file actions, batch pulls and backup
+  comparison; support exact archive pulls and recursive replacement manifests.
+- Replace the title write allowlist with interactive archive/account/path
+  confirmation and shared path validation for writes and deletes.
+- Require separate confirmation for missing backups or changed live bytes.
+- Include cleanup-gated acquisition and worker-timeout diagnostic patches for
+  the [companion host](https://github.com/x43x61x69/ns2jb).
+- Run acquisition tests against a companion checkout instead of ignored staging
+  files; pin its revision in CI and enable CI on `local-modifications`.
+
+The native acquisition hang remains unresolved. Offline tests and diagnostic
+improvements do not establish hardware reliability.
+
 ## credits and licence
+
+Additional maintenance: [@x43x61x69](https://github.com/x43x61x69).
 
 our code is MIT (see [LICENSE](LICENSE)). third-party components and links are
 listed in [NOTICE](NOTICE): ns2jb (the exploit, linked not vendored), Seedsow Lua

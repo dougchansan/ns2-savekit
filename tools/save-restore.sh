@@ -17,9 +17,8 @@
 # which is exactly what the plain write path refuses. The pre-restore backup in step 1
 # is what makes that acceptable: it is the state you can go back to.
 #
-# The title must be allowed to be written: the built-in list covers the disposable
-# titles this toolkit was developed on, and config/titles.local.json can add more
-# (see config/titles.json for the shape; keep that file out of version control).
+# Any title may be written; the staged writer always asks for interactive
+# confirmation before opening the archive read-write.
 set -eu
 run=${1:?usage: save-restore.sh <run> <program-id> <uid> <save-directory> [--space N --type N] [--dry-run]}
 program=${2:?program id required}

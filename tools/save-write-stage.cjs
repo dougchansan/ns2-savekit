@@ -10,6 +10,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
 const {hashFile} = require('./lib/verified-file-hash.cjs');
+const {build: saveAttribute} = require('./lib/save-attr.cjs');
+const {allowRisk, validateSavePath, confirmWrite} = require('./lib/write-policy.cjs');
 
 function request(socketPath, command) {
   return new Promise((resolve, reject) => {
@@ -41,7 +43,7 @@ async function main() {
     process.argv.slice(2);
   if (!runDirectory || !programText || !uidText || !verifyDirectory || !manifestPath) {
     console.error('usage: node save-write-stage.cjs <run-directory> <program-id> <uid-hex> ' +
-      '<backup-directory> <manifest.json> [--space N] [--type N] [--restore] [--confirm-restore]');
+      '<backup-directory> <manifest.json> [--space N] [--type N] [--rank N] [--index N] [--restore] [--confirm-restore]');
     process.exit(2);
   }
   // Space/type make this work outside User/Account (Sports Resort is a Device save);
@@ -57,6 +59,9 @@ async function main() {
   };
   const space = option('--space') ?? 1;
   const type = option('--type') ?? 1;
+  const rank = option('--rank') ?? 0;
+  const index = option('--index') ?? 0;
+  check(rank >= 0 && rank <= 1 && index >= 0 && index <= 65535, 'Invalid archive rank/index');
   const restore = flag('--restore');
   if (restore) check(flag('--confirm-restore'),
     '--restore overwrites live save data; pass --confirm-restore after the backup');
@@ -84,40 +89,19 @@ async function main() {
     if (entry.sha256 !== undefined)
       check(typeof entry.sha256 === 'string' && /^[0-9a-f]{64}$/.test(entry.sha256) && sha(bytes) === entry.sha256,
         'Staged file hash differs from the manifest: ' + entry.path);
-    check(entry.path.startsWith('/') && !entry.path.includes('..') && !entry.path.includes('\0'),
-      'Invalid save path: ' + entry.path);
+    validateSavePath(entry.path);
     const rel = entry.path.slice(1);
     jobs.push({name: rel, path: entry.path, bytes, replace: entry.replace === true,
-      local: path.join(verifyDirectory, rel)});
+      local: verifyDirectory === '-' ? null : path.join(verifyDirectory, rel)});
   }
 
-  // --- guardrails: disposable titles only, user space only, add-only, backed up ---
-  const WHITELIST = new Set([
-    '010012900d38a000', // Nora to Oujo to Noraneko Heart 2 trial
-    '010042d022aea000', // Seedsow Lullaby demo
-    '0100ee5021c9e000', // Seedsow Lullaby (full)
-    '01005eb012fe2000', // Wagamama High Spec trial
-  ]);
-  // Optional local allowlist; the built-in list stays as the floor.
-  try {
-    const extra = JSON.parse(require('node:fs').readFileSync(
-      path.join(__dirname, '..', 'config', 'titles.json'), 'utf8'));
-    for (const entry of extra.write || []) WHITELIST.add(String(entry.id).toLowerCase());
-  } catch { /* no local allowlist: use the built-in one */ }
   const idText = programId.toString(16).padStart(16, '0');
-  check(WHITELIST.has(idText),
-    'Refusing to write to ' + idText + ': not a whitelisted disposable title');
-  check(verifyDirectory, 'A backup directory is required (pass the earlier save-pull output)');
-  const backupFiles = await fs.readdir(verifyDirectory).catch(() => []);
-  check(backupFiles.length > 0, 'Backup directory is empty: ' + verifyDirectory);
+  const backupFiles = verifyDirectory === '-' ? [] : await fs.readdir(verifyDirectory).catch(() => []);
+  await allowRisk(backupFiles.length > 0, 'No usable backup directory: ' + verifyDirectory);
   for (const job of jobs) {
-    const inBackup = await fs.stat(job.local).then(st => st.isFile()).catch(() => false);
-    if (job.replace) {
-      check(inBackup, 'Cannot replace ' + job.path +
-        ': the backup does not contain a copy to compare');
-    } else {
-      check(!inBackup, 'Refusing to add ' + job.path + ': the backup already contains it');
-    }
+    const inBackup = job.local && await fs.stat(job.local).then(st => st.isFile()).catch(() => false);
+    await allowRisk(!job.replace || inBackup, 'No backup copy for replacement ' + job.path);
+    await allowRisk(job.replace || !inBackup, 'Backup already contains add target ' + job.path);
   }
 
   await request(current.socketPath, {command: 'root-native-info'});
@@ -126,11 +110,7 @@ async function main() {
   await s.initialize();
 
   const openSave = async command => {
-    const input = Buffer.alloc(0x48);
-    input[0] = space;                   // SaveDataSpaceId (1 User, 4 SdUser)
-    input.writeBigUInt64LE(programId, 8);
-    uid.copy(input, 0x10);
-    input[0x28] = type;                 // SaveDataType (1 Account, 3 Device)
+    const input = saveAttribute({space, type, rank, index, uid, referenceId: programId});
     const reply = await s.ipc(command === 51 ? 'Open save read-write' : 'Open save read-only',
       root, command, input);
     check(!reply.result && reply.moves.length === 1,
@@ -203,37 +183,36 @@ async function main() {
       if (!present) {
         check((Number(opened.canonicalResult ?? opened.result) & 0x3fffff) === 0x202,
           'Cannot establish whether ' + job.path + ' exists: ' + code(opened.result));
-        check(!job.replace, 'Cannot replace ' + job.path + ': it is not in the save');
+        await allowRisk(!job.replace, 'Replacement target is absent: ' + job.path);
         continue;
       }
-      check(job.replace, 'Refusing to overwrite existing save file ' + job.path);
+
       // Replace-mode compares against the backup; restore-mode deliberately does not.
       check(!opened.result, 'Cannot open ' + job.path + ' to compare it');
       try {
         const size = Number(await filesystem.fileSize(s, opened.handle));
         const liveHash = await hashFile(s, filesystem, opened.handle, size);
-        const backup = await fs.readFile(job.local);
-        if (restore) {
-          // Say exactly what changes: with --restore this log line is the record of
-          // the overwrite, and the caller's pre-restore backup is the way back.
-          console.log('restore: ' + job.path + ' live ' + size + 'B ' +
-            liveHash.slice(0, 16) + '... -> ' + backup.length + 'B ' +
-            sha(backup).slice(0, 16) + '...');
-        } else {
-          check(liveHash === sha(backup),
-            'Live ' + job.path + ' differs from the backup; refusing to replace ' +
-            '(use --restore --confirm-restore to put a backup back)');
-          console.log('replace ok: live ' + job.path + ' matches the backup ('
-            + sha(backup).slice(0, 16) + '...)');
+        await allowRisk(job.replace, 'Overwrite existing save file ' + job.path);
+        const backup = job.local ? await fs.readFile(job.local).catch(error => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        }) : null;
+        if (!restore && backup) {
+          await allowRisk(liveHash === sha(backup), 'Live ' + job.path + ' differs from the backup');
         }
+        console.log((restore ? 'restore: ' : 'replace: ') + job.path + ' ' +
+          size + 'B -> ' + job.bytes.length + 'B');
       } finally {
         await s.close(opened.handle).catch(() => {});
       }
     }
-    console.log('pre-check ok: none of ' + jobs.map(j => j.name).join(', ') +
-      ' exist; backup has ' + backupFiles.length + ' entries');
+    console.log('pre-check complete: ' + jobs.length + ' file(s)');
     await s.close(save); save = null;
 
+    await confirmWrite({title: idText, uid: uid.toString('hex'), space, type, rank, index,
+      operation: restore ? 'Restore' : 'Write',
+      files: jobs.map(job => job.path + ' (' + (job.replace ? 'replace' : 'add') +
+        ', ' + job.bytes.length + ' bytes)')});
     save = await openSave(51);
     // Parent directories first: Nora keeps /debug/lua/index.lua. Already-exists replies
     // are expected here; a real failure shows up on the file write itself.
@@ -262,9 +241,9 @@ async function main() {
     for (const job of jobs) {
       const opened = await filesystem.openFile(s, save, job.path);
       check(!opened.result, 'Verify could not open ' + job.path + ': ' + code(opened.result));
-      const size = Number(await filesystem.fileSize(s, opened.handle));
-      let got;
+      let size, got;
       try {
+        size = Number(await filesystem.fileSize(s, opened.handle));
         got = await hashFile(s, filesystem, opened.handle, size);
       } finally {
         await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));

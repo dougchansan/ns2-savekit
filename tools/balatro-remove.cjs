@@ -7,6 +7,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { TITLE_ID, INSTALL_PATHS } = require('./lib/balatro-release.cjs');
 const { hashFile } = require('./lib/verified-file-hash.cjs');
+const { confirmWrite } = require('./lib/write-policy.cjs');
 const { exitForErrorText } = require('./lib/delete-result.cjs');
 
 const NOT_FOUND = 0x202;
@@ -168,6 +169,9 @@ async function main(argv = process.argv.slice(2)) {
     console.log(JSON.stringify({ removed: 0, alreadyAbsent: 0, verifiedAbsent: 0 }));
     return;
   }
+  await confirmWrite({title: TITLE_ID, uid: uidText.toLowerCase(), space: 1, type: 1,
+    operation: 'Remove Balatro launcher',
+    files: entries.map(entry => entry.path + ' (' + entry.size + ' bytes)')});
   const run = path.resolve(runDirectory);
   const engine = path.join(run, 'switch2');
   const current = JSON.parse(await fs.readFile(path.join(engine, 'current-acquisition.json'), 'utf8'));

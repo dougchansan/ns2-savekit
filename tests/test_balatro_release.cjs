@@ -14,7 +14,7 @@ const HELPER = path.resolve(__dirname, '../tools/balatro-archive.py');
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
 function temporary(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'balatro-release-test-'));
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'balatro-release-test-'));
   t.after(() => fs.rmSync(dir, {recursive:true, force:true}));
   return dir;
 }

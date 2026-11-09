@@ -62,6 +62,15 @@ live archive and the explicit user UID instead.
 The payload is downloaded at run time. No upstream launcher, font, game save,
 keys or game assets are bundled in this repository.
 
+## Confirmation in this fork
+
+Installation uses the shared staged writer's interactive title/account/path
+confirmation. Receipt-based removal also asks for interactive confirmation,
+including direct CLI use; `--confirm` and `--confirm-restore` select the operation
+but do not authorize piped or unattended deletion. Archive pulls use the exact
+primary account archive (`space=1`, `type=1`, `rank=0`, `index=0`). The menu hides
+Balatro actions for other archive types or indices.
+
 ## Prerequisites
 
 - Node 20+ and Python 3. The download uses Node; a local `--archive` avoids it.
