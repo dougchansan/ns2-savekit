@@ -293,26 +293,43 @@ the controller/esp32 work lives in
 [ns2-console](https://github.com/dougchansan/ns2-console); the content/asset
 pipeline is in [ns2-assets](https://github.com/dougchansan/ns2-assets).
 
-## fork changes
+## Update history
 
-Based on [dougchansan/ns2-savekit](https://github.com/dougchansan/ns2-savekit)
-at `700814f`, with run discovery, archive-specific file actions, recursive
-replacement manifests, and interactive write/delete confirmation. The companion
-[patched host](https://github.com/x43x61x69/ns2jb) includes cleanup-gated
-acquisition retries and worker timeout diagnostics. The native acquisition hang
-remains unresolved; diagnostics do not establish hardware reliability.
+Times below use UTC+08:00 (Asia/Taipei) and record when changes were committed
+in this fork. The base is
+[dougchansan/ns2-savekit](https://github.com/dougchansan/ns2-savekit) at `700814f`.
 
-Selected fixes from upstream `9d8ba7f` are integrated:
+### 2026-11-09 15:25 — upstream fixes and documentation
 
-- `123edd8`: bounded reads for large-file hash verification, shared by both
-  staged writes and the single-file wrapper.
-- `975a59b`: check optional manifest size/SHA-256 before opening a console
-  session, and recognize only canonical path-not-found replies as absent files.
+- Port large-file hash verification from upstream `123edd8`: read back in
+  chunks of at most 256 KiB for staged writes and the single-file wrapper.
+- Port manifest integrity checks from `975a59b`: validate optional file size
+  and SHA-256 before opening a console session.
+- Accept only canonical path-not-found replies when establishing that an add
+  target is absent; other open failures stop the operation.
+- Add regression tests for changed/identical replacements, stale backups,
+  corrupt or missing read-backs, bounded reads and manifest integrity.
+- Reduce personal attribution to one credits entry and use functional headings.
+- Keep the optional upstream Balatro launcher out of this selective port. The
+  `0b28b4f` replacement-verification fix is covered by the shared staged writer,
+  which compares committed targets with their replacement bytes.
 
-The single-file verification fix in `0b28b4f` is already covered by this fork's
-shared staged writer, which compares committed targets with replacement bytes.
-The optional Balatro launcher is not included. This is a selective port, not a
-full merge of upstream main; the original commits remain available there.
+### 2026-11-09 15:14–15:15 — initial integration
+
+- Discover runs across workspace ancestors and `NS2_RUNS`; select the newest
+  discovered run by default.
+- Preserve archive selectors through file actions, batch pulls and backup
+  comparison; support exact archive pulls and recursive replacement manifests.
+- Replace the title write allowlist with interactive archive/account/path
+  confirmation and shared path validation for writes and deletes.
+- Require separate confirmation for missing backups or changed live bytes.
+- Include cleanup-gated acquisition and worker-timeout diagnostic patches for
+  the [companion host](https://github.com/x43x61x69/ns2jb).
+- Run acquisition tests against a companion checkout instead of ignored staging
+  files; pin its revision in CI and enable CI on `local-modifications`.
+
+The native acquisition hang remains unresolved. Offline tests and diagnostic
+improvements do not establish hardware reliability.
 
 ## credits and licence
 
