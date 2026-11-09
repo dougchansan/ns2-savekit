@@ -50,3 +50,21 @@ patches.
 this toolkit was developed and tested against. So the hardware evidence in
 [docs/RESULTS.md](../docs/RESULTS.md) - four committed writes, all read back and
 hashed, plus the 275-file editor install - applies to a patched checkout exactly.
+
+## Additional patches in ZW Cai's fork
+
+After the existing `.diff` patches, apply these two patches before a fresh run:
+
+```sh
+git -C /path/to/ns2jb apply /path/to/ns2-savekit/patches/ns2jb-acquisition-retry.patch
+git -C /path/to/ns2jb apply /path/to/ns2-savekit/patches/ns2jb-worker-timeout-diagnostics.patch
+```
+
+`apply.sh` applies the original `.diff` files only. These additional `.patch`
+files are already integrated in `x43x61x69/ns2jb`; do not reapply them there.
+Retries require proven cleanup; timeout diagnostics preserve planned calls
+without claiming an executing step. The native hang remains unresolved.
+
+To run all Node tests, clone the companion host alongside this toolkit as
+`ns2jb`, or set `NS2JB_ROOT` to its checkout. The tests no longer depend on
+gitignored staging files. CI checks out the companion host automatically.

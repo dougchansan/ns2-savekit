@@ -1,0 +1,69 @@
+--- a/engine/switch2/app/native-worker.cjs
++++ b/engine/switch2/app/native-worker.cjs
+@@ -85,7 +85,18 @@
+     if (finished) break;
+     await new Promise(resolve => setTimeout(resolve, 10));
+   } while (Date.now() < until);
+-  check(finished, 'Native batch did not terminate; resources retained');
++  if (!finished) {
++    // Preserve host-known identity even when owned memory cannot be read.
++    // The last executing step is unknown until a progress capture succeeds.
++    const error = Error('Native batch did not terminate: ' + worker.label +
++      ' (thread ' + worker.thread + ', timeout ' + timeoutMs + 'ms); resources retained');
++    error.workerFailure = {label: worker.label, thread: worker.thread,
++      timeoutMs, observed: 'not-terminated', executingStep: null,
++      calls: worker.calls.map((call, index) => ({index, name: call.name || call.kind || 'call',
++        kind: call.kind || 'native', function: call.function,
++        args: call.args.map(arg => typeof arg === 'bigint' ? arg.toString() : arg)}))};
++    throw error;
++  }
+   const raw = await s.readOwned(worker.base + worker.resultOffsets[0], worker.resultOffsets.length * 8);
+   const values = worker.resultOffsets.map((_, i) => raw.readBigUInt64LE(i * 8));
+   check(values.every(value => value !== SENTINEL), 'Native batch did not store every result');
+--- a/engine/switch2/memory/probe-reserved-gap.cjs
++++ b/engine/switch2/memory/probe-reserved-gap.cjs
+@@ -66,9 +66,11 @@
+   const runControl = new RunControl({id: label, save});
+   report.control = runControl.state;
+   const call = (offset, args = [0, 0, 0, 0], name) => ({function: live.sdk + offset, args, name});
+-  const wait = address => call(events.code.wait.offset, [address, 0, 0, 0]);
+-  const signal = address => call(events.code.signal.offset, [address, 0, 0, 0]);
+-  const sleep = nanoseconds => call(code.sleep.offset, [nanoseconds, 0, 0, 0]);
++  const eventName = address => ({[master]: 'master', [holeDone]: 'holeDone',
++    [groupReleased]: 'groupReleased', [guardLaunched]: 'guardLaunched'})[address] || String(address);
++  const wait = address => call(events.code.wait.offset, [address, 0, 0, 0], 'wait:' + eventName(address));
++  const signal = address => call(events.code.signal.offset, [address, 0, 0, 0], 'signal:' + eventName(address));
++  const sleep = nanoseconds => call(code.sleep.offset, [nanoseconds, 0, 0, 0], 'sleep:' + nanoseconds + 'ns');
+   const tick = name => call(timing.code.tick.offset, undefined, name);
+   const send = (address, handle, name) => ({...call(functions.send.offset,
+     [address, 4096, handle, 0], name), kind: 'ipc'});
+@@ -400,7 +402,17 @@
+         }
+         await affinity.pinAll(s, workers, workers.map((_, i) => cores[i % cores.length]));
+       });
+-      report.active = {profile, readSize};
++      // Persist the plan before releasing the start gate: a failed IPC may
++      // make later progress captures inaccessible. This is a plan, not proof
++      // that any particular call has started or completed.
++      report.active = {profile, readSize, wave: report.cases.length + 1,
++        started: new Date().toISOString(), diagnosticKind: 'planned',
++        workers: workers.map((worker, index) => ({role: roles[index], label: worker.label,
++          thread: worker.thread, coreMask: String(cores[index % cores.length]),
++          calls: worker.calls.map((step, callIndex) => ({index: callIndex,
++            name: step.name || step.kind || 'call', kind: step.kind || 'native',
++            function: step.function,
++            args: step.args.map(arg => typeof arg === 'bigint' ? arg.toString() : arg)}))}))};
+       await save();
+       console.log(JSON.stringify({stage: 'prepared', ...report.active, file}));
+       released = true;
+@@ -1064,7 +1076,10 @@
+     if (error instanceof StopRequested) report.stopped = true;
+     else {
+       report.error = error.stack;
++      if (error.workerFailure) report.workerFailure = error.workerFailure;
+       process.exitCode = 1;
++      // Save the host-side failure before attempting any diagnostic RPC.
++      await save();
+       if (runControl.started && await s.ready()) {
+         if (s.threads.size && workers.length) {
+           try {

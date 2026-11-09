@@ -2,10 +2,12 @@
 // Delete a file from another title's save data through the exploit's promoted
 // (pid=1) fsp-srv root, then commit.
 //
-//   node save-delete-root.cjs <run-directory> <program-id> <uid-hex> <save-path>
+//   node save-delete-root.cjs <run-directory> <program-id> <uid-hex> <save-path> [--space N --type N --rank N --index N]
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
+const {build: saveAttribute} = require('./lib/save-attr.cjs');
+const {confirmWrite, validateSavePath} = require('./lib/write-policy.cjs');
 const {EXIT, classifyFsResult, decideDelete} = require('./lib/delete-result.cjs');
 
 function request(socketPath, command) {
@@ -33,9 +35,20 @@ const check = (ok, message) => {if (!ok) throw Error(message);};
 async function main() {
   const [runDirectory, programText, uidText, savePath] = process.argv.slice(2);
   if (!runDirectory || !programText || !uidText || !savePath) {
-    console.error('usage: node save-delete-root.cjs <run-directory> <program-id> <uid-hex> <save-path>');
+    console.error('usage: node save-delete-root.cjs <run-directory> <program-id> <uid-hex> <save-path> [--space N --type N --rank N --index N]');
     process.exit(2);
   }
+  validateSavePath(savePath);
+  const option = (name, fallback) => {
+    const at = process.argv.indexOf(name);
+    if (at < 0) return fallback;
+    const value = process.argv[at + 1];
+    check(/^[0-9]+$/.test(value || ''), name + ' needs a number');
+    return Number(value);
+  };
+  const space = option('--space', 1), type = option('--type', 1);
+  const rank = option('--rank', 0), index = option('--index', 0);
+  check(space <= 255 && type <= 255 && rank <= 1 && index <= 65535, 'Invalid archive identity');
   const run = path.resolve(runDirectory);
   const engine = path.join(run, 'switch2');
   const current = JSON.parse(await fs.readFile(path.join(engine, 'current-acquisition.json'), 'utf8'));
@@ -49,6 +62,9 @@ async function main() {
   const programId = BigInt(/^0x/i.test(programText) ? programText : '0x' + programText);
   const uid = Buffer.from(uidText.replace(/^0x/i, ''), 'hex');
   check(uid.length === 16, 'uid must be the raw 16-byte AccountUid');
+
+  await confirmWrite({title: programId.toString(16).padStart(16, '0'),
+    uid: uid.toString('hex'), space, type, rank, index, operation: 'Delete', files: [savePath]});
 
   await request(current.socketPath, {command: 'root-native-info'});
   const s = new Session('save-delete-' + Date.now(), 0x80000);
@@ -74,11 +90,7 @@ async function main() {
   const filesystem = require(path.join(engine, 'app/filesystem.cjs'));
 
   const openSave = async command => {
-    const input = Buffer.alloc(0x48);
-    input[0] = 1;
-    input.writeBigUInt64LE(programId, 8);
-    uid.copy(input, 0x10);
-    input[0x28] = 1;
+    const input = saveAttribute({space, type, rank, index, uid, referenceId: programId});
     const opened = await s.ipc(command === 51 ? 'Open save read-write' : 'Open save read-only',
       root, command, input);
     check(!opened.result && opened.moves.length === 1, 'Save open failed: ' + code(opened.result));

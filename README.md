@@ -1,5 +1,32 @@
 # ns2-savekit
 
+## ZW Cai's fork
+
+Maintained by ZW Cai ([@x43x61x69](https://github.com/x43x61x69)). Based on
+[dougchansan/ns2-savekit](https://github.com/dougchansan/ns2-savekit) at
+`700814f`; upstream authors retain credit for the original toolkit. The
+`local-modifications` branch preserves this local version; upstream `main`
+remains available separately. The companion patched host is
+[x43x61x69/ns2jb](https://github.com/x43x61x69/ns2jb).
+
+This fork adds run discovery across workspace ancestors and `NS2_RUNS`,
+default selection of the newest run, archive-specific file actions and batch
+pulls, optional backup comparison, and recursive replacement manifests.
+Writes and deletes accept any title after interactive confirmation of the
+archive, account and paths; missing backups and changed live bytes need their
+own confirmation. Shared path validation rejects traversal and invalid paths.
+The legacy title write allowlist is replaced by title-name hints.
+
+It also includes cleanup-gated acquisition retries and tests against the
+companion host. Native-worker timeout diagnostics identify the worker and
+preserve the planned calls; they do not prove which call was executing or fix
+the native hang. Acquisition remains unresolved on the latest observed run:
+cleanup was unproven, so the supervisor correctly stopped after one attempt.
+Offline tests do not establish hardware reliability.
+
+Local changes, integration and validation credit: **ZW Cai (@x43x61x69)**.
+Original toolkit: **dougchansan**; third-party credit remains in [NOTICE](NOTICE).
+
 read, back up, restore and modify save data for **any Switch 2 title**, whether
 it is installed, on a card, or has no card inserted, over a live
 [ns2jb](https://gitlab.com/kurumuz/ns2jb) session. the save path is
@@ -13,6 +40,24 @@ title you own.
 
 the exploit is **not** here. nothing in this repo is exploit code, keys, or game
 content.
+
+## offline validation
+
+Clone the companion host alongside this checkout as `ns2jb`, or set
+`NS2JB_ROOT=/path/to/ns2jb`, then run:
+
+```sh
+node --test tests/test_*.cjs
+python3 tests/test_offline.py
+lua tests/test_payload_lua.lua
+lua tests/test_metadata_lua.lua
+sh tests/test_inject_dryrun.sh
+```
+
+Validated locally: 28 Node test entries, 8 Python tests, and the Lua suites
+passed. Real-sample Lua cases and the shell dry run skip when their optional
+local fixtures are absent. CI pins the companion engine to commit
+`206a4f01826154eea00f1664f10819e0e7e856e5` for reproducibility.
 
 ## what you need
 
@@ -55,24 +100,49 @@ scripts and prints the exact command before each one.
 | menu | what it does |
 | --- | --- |
 | list | list the files in a save (read-only) |
-| backup | pull the save into `saves/<game>/user-<uid>/<timestamp>` |
+| backup | pull the save into `saves/<game>/user-<uid>/<timestamp>`, then offer comparison (default: yes) |
 | replace | write files from a directory, in one transaction |
 | delete | remove one file at the save root |
 | verify | pull again and compare every file with the backup |
-| all saves (a) | list every archive the console's save index knows, cartridge saves included, no titledb |
+| all saves (a) | list and select archives from the console's save index, including uninstalled/cartridge games; open file actions for the selected game archive |
 | pull batch (p) | pull the next pending archives from that inventory (default 5) |
 | launcher / editor | Artemis only: install the payload set or the Seedsow Lua Editor save |
 | alula launcher | Artemis demo only: install alula's upstream Artemis Launcher against an immutable original baseline, verify it, or roll it back safely (the menu number moves with the title's other entries; read the label) |
 | Artemis HTTP (`--http`) | no ns2jb session: health, Lua, stat, download, upload, delete and explicit-file backup over the launcher's port 8080 |
 
-writes are fenced:
+ns2jb writes use one commit and read back every written file to verify its hash.
+Any Title ID may be written without a config entry. Every ns2jb write or delete
+requires interactive confirmation showing the title, account and affected paths
+(default: cancel), including direct CLI use and restores. Piped input and flags
+such as `--confirm-restore` do not bypass this prompt. Missing backups, changed
+live bytes and unexpected existing files still require separate confirmation. Use `-` for
+no backup in `save-write-stage.cjs`; the single-file writer's backup is optional.
+Replace preserves relative subdirectories, e.g. `slots/0/save.dat` becomes
+`/slots/0/save.dat`. Empty segments, `.`/`..`, backslashes and control characters
+are rejected. Launcher installers retain their own baseline requirements.
 
-- read-only by default; a write needs a prior backup and compares the live
-  bytes against it before replacing anything;
-- only titles on the allowlist (`config/titles.json`, plus your
-  `config/titles.local.json`) can be written;
-- one open, one commit, then every file is read back and hashed;
-- paths must be `/name`; `..`, nested paths and absolute paths are rejected.
+Artemis HTTP addresses only the launcher's currently mounted save, not another
+title/account. For example:
+
+```sh
+node tools/artemis-http.cjs put --host <console-ip> --path save:/custom.dat --in ./custom.dat --force
+```
+
+`--force` permits overwriting. The HTTP transport accepts flat filenames only
+and rejects protected launcher/save files; it has no title/account selector.
+
+The session menu defaults to the newest discovered run: press Enter to select it.
+The archive menu preserves the selected UID, space, type, rank and index for list,
+backup, replace, delete and verification. Backups are separated by archive ID.
+System archives without a verified static save ID are shown but cannot be opened
+from this menu. After a backup, press Enter at `[Y/n]` to pull again and compare
+file hashes, or enter `n` to skip.
+
+Run discovery searches the current directory and repository ancestors for
+`runs`, `ns2jb/runs` and `ns2jb-rpc/runs`. Set `NS2_RUNS` to a runs directory (or
+one run), or pass a run directly. A discovered RPC run without
+`switch2/ro/root/current-root.json` is shown as root not ready; save operations
+still require that promoted root.
 
 several save operations per boot usually work; restart the console only if one
 actually fails. the one thing that reliably breaks the next session is leaving a
@@ -205,7 +275,6 @@ Full details, hardware results (4/16/64 KiB, binary, relaunch) and limitations:
 | `ListAllUsers: transport 0xf601` | the engine has no CMIF pointer descriptors; not a console fault | apply the patches and start a new run |
 | `SESSION LOST` / `transport 0xf601` during a pull or write | the console stopped answering | restart the console, reopen SmileBASIC, start a new session |
 | `NO LIVE HOST` / `memory.sock` | the session folder is stale or gone | start the host again and use the run folder it prints |
-| title listed without `✔` | it is not on your write allowlist | add its id to `config/titles.local.json` |
 | names are missing, ids only | the console gave no name for that id (no control data, or the read was refused) and titledb is a Switch 1 catalogue, so it cannot name a Switch 2 title | paste the stub the tools print into `config/titles.local.json`; console names that were read are cached in `config/titles.nacp.json` |
 
 ## tests
@@ -213,6 +282,9 @@ Full details, hardware results (4/16/64 KiB, binary, relaunch) and limitations:
 offline, no console, no network:
 
 ```sh
+node tests/test_write_confirmation.cjs # mandatory write/delete confirmation (18)
+node tests/test_write_policy.cjs      # paths, backups and recursive replace
+node tests/test_kit_archives.cjs      # session defaults, archive actions, backup comparison
 node tests/test_kit_probe.cjs        # kit save detection (5)
 node tests/test_inventory.cjs        # inventory reporting (7)
 node tests/test_save_attr.cjs        # save attribute packing (9)
@@ -240,7 +312,7 @@ python3 tests/test_offline.py        # save/ASB encoders (8)
 tools/     pull/write/restore/list/inventory, ASB encoder, launcher builders
 payloads/  Lua that runs inside the game: launcher stub, body, metadata
 patches/   the engine patches the tools need (apply before the first run)
-config/    write allowlist template (local config files are gitignored)
+config/    title names and local overrides (local config files are gitignored)
 docs/      LAUNCHER, RESTORE, SAVE-ARCHIVES, TECHNICAL, PATCHED-ENGINE, RESULTS
 tests/     offline suites; none of them prove console behaviour
 ```

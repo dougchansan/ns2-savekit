@@ -66,6 +66,8 @@ test('successful enumeration still prints the table', () => {
   assert.strictEqual(r.code, 0, r.err);
   assert.match(r.out, /Game A\s+1\s+3/);
   assert.match(r.out, /4 save archives/);
+  assert.match(r.out, /Any title may be written; every write requires interactive confirmation/);
+  assert.doesNotMatch(r.out, /✔|allowlist|write-allowed/);
 });
 
 test('unnamed titles get a paste-ready local stub', () => {

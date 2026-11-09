@@ -9,3 +9,6 @@ config/titledb-cache.json
 config/uids.json
 config/titles.local.json
 config/titles.nacp.json
+.DS_Store
+._*
+.test-ns2jb/

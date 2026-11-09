@@ -4,33 +4,24 @@
 //
 // It does not reimplement anything: every action shells out to the proven
 // scripts (list-apps, find-save-uid, save-pull-root, save-write-stage,
-// save-delete-root) so the safety rails - whitelist, required backup, verified
-// replaces, one transaction per write - stay exactly where they were tested.
+// save-delete-root); writers own risk prompts, commits and read-back checks.
 //
 //   node kit.cjs [run-directory]
 //
-// With no argument it picks the newest run folder that has a promoted root.
+// With no argument the session menu defaults to the newest discovered run.
 const {spawnSync} = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
 
 const titles = require('./lib/titles.cjs');
-const ALLOWED = new Set();
-try {
-  for (const name of ['titles.json', 'titles.local.json']) {
-    const extra = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', name), 'utf8'));
-    for (const entry of extra.write || []) ALLOWED.add(String(entry.id).toLowerCase());
-  }
-} catch { /* allowlist file is optional */ }
-
 const TOOLS = __dirname;
 const REPO = path.resolve(TOOLS, '..');
 let namesNoted = false;
 const NOTICE = [
-  'Writes are the only dangerous operation and they are fenced: disposable titles',
-  'only, a backup is required, existing files are replaced only when the live bytes',
-  'still match that backup, everything goes down in one commit and is hashed back.',
+  'Any title may be written; every write requires interactive confirmation.',
+  'Writes commit one transaction and are hashed back.',
+  'Missing backups, changed live files and other write risks require confirmation.',
   'Several save operations run fine in one session; restart only if one fails.',
 ].join('\n');
 
@@ -79,33 +70,15 @@ function run(script, args, options = {}) {
   });
 }
 
-function findRuns() {
-  const home = process.env.HOME || '';
-  const bases = [
-    process.env.NS2_RUNS,                                  // explicit override
-    path.join(process.cwd(), 'runs'),                       // ./runs
-    path.join(REPO, '..', 'ns2jb-rpc', 'runs'),             // sibling checkout
-    path.join(REPO, '..', 'ns2jb', 'runs'),                 // sibling upstream
-    path.join(home, 'ns2jb-rpc', 'runs'),
-    path.join(home, 'ns2jb', 'runs'),
-  ].filter(Boolean);
-  const candidates = [];
-  for (const base of bases) {
-    if (!fs.existsSync(base)) continue;
-    for (const name of fs.readdirSync(base)) {
-      const dir = path.join(base, name);
-      const proof = path.join(dir, 'switch2', 'ro', 'root', 'current-root.json');
-      if (fs.existsSync(proof)) {
-        candidates.push({dir, when: fs.statSync(proof).mtimeMs});
-      }
-    }
-  }
-  return candidates.sort((a, b) => b.when - a.when).map(entry => entry.dir);
-}
+const {discoverRuns} = require('./lib/run-discovery.cjs');
+function findRuns() { return discoverRuns({repo: REPO}); }
 
 const rl = readline.createInterface({input: process.stdin, output: process.stdout});
 let closed = false;
-rl.on('close', () => { closed = true; });
+rl.on('close', () => {
+  closed = true;
+  while (waiting.length) waiting.shift()('');
+});
 // Lines are queued, not awaited one at a time: a piped script delivers every
 // answer before the first question is printed, and rl.question would drop them.
 const pending = [];
@@ -124,19 +97,23 @@ async function askDefault(question, fallback) {
   const answer = await ask(`${question}${fallback ? ` [${fallback}]` : ''}: `);
   return answer === '' ? fallback : answer;
 }
-async function choose(question, options) {
+async function choose(question, options, defaultIndex = null) {
   console.log('\n' + question);
   options.forEach((option, index) => console.log(`  ${index + 1}) ${option.label}`));
   for (;;) {
-    const answer = await ask(`Number 1-${options.length} (blank = back): `);
-    if (answer === '') return null;
+    const hasInput = !closed || pending.length > 0;
+    const answer = await ask(`Number 1-${options.length} ` +
+      (defaultIndex === null ? '(blank = back): ' : `[${defaultIndex + 1}] (blank = default): `));
+    if (answer === '') return !hasInput || defaultIndex === null ? null : options[defaultIndex];
     const index = Number(answer);
     if (Number.isInteger(index) && index >= 1 && index <= options.length) return options[index - 1];
     console.log('  not a listed number');
   }
 }
-async function confirm(question) {
-  const answer = (await ask(`${question} [y/N]: `)).toLowerCase();
+async function confirm(question, defaultYes = false) {
+  const hasInput = !closed || pending.length > 0;
+  const answer = (await ask(`${question} ${defaultYes ? '[Y/n]' : '[y/N]'}: `)).toLowerCase();
+  if (answer === '') return hasInput && defaultYes;
   return answer === 'y' || answer === 'yes';
 }
 
@@ -153,14 +130,14 @@ function heading(text) {
 async function pickSession() {
   const runs = findRuns();
   if (runs.length === 0) {
-    console.log('No run folder with a promoted root was found.');
+    console.log('No ns2jb run folder was found. Set NS2_RUNS or pass a run directory explicitly.');
     console.log('Start the exploit first:  node run.cjs --rpc <computer-ip>');
     return null;
   }
   const chosen = await choose('Which session?', [
-    {label: 'newest: ' + path.basename(runs[0]), value: runs[0]},
-    ...runs.slice(1, 7).map(dir => ({label: path.basename(dir) + '   ' + dir, value: dir})),
-  ]);
+    {label: 'newest: ' + path.basename(runs[0].dir) + (runs[0].promoted ? '' : ' [' + runs[0].state + ']'), value: runs[0].dir},
+    ...runs.slice(1, 7).map(item => ({label: path.basename(item.dir) + (item.promoted ? '' : ' [' + item.state + ']') + '   ' + item.dir, value: item.dir})),
+  ], 0);
   return chosen ? chosen.value : null;
 }
 
@@ -192,7 +169,7 @@ async function titleRows(session) {
   }
   return ids.map(id => ({
     id,
-    label: (ALLOWED.has(id.toLowerCase()) ? '✔ ' : '  ') + titles.label(id),
+    label: titles.label(id),
   }));
 }
 
@@ -202,7 +179,7 @@ async function pickTitle(session) {
     console.log('No installed applications were listed.');
     return null;
   }
-  const chosen = await choose('Which title?  (✔ = write-allowed)', rows);
+  const chosen = await choose('Which title?  (all writes require confirmation)', rows);
   return chosen ? chosen.value : null;
 }
 
@@ -416,7 +393,7 @@ async function pickUid(session, title) {
   return uid;
 }
 
-async function doBackup(session, title, uid) {
+async function doBackup(session, title, uid, archive = null) {
   const stamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '');
   if (uid === 'all') {
     const slots = accountSlots(session);
@@ -436,17 +413,21 @@ async function doBackup(session, title, uid) {
       }
       echoCommand('node tools/save-pull-root.cjs ' + [session, title, dir, slots[i]].map(quote).join(' '));
       const result = run('save-pull-root.cjs', [session, title, dir, slots[i]], {stdio: 'inherit'});
-      if (result.ok) made.push(dir);
+      if (result.ok) made.push({dir, uid: slots[i]});
       else console.log('  pull failed (the session may have dropped)');
       saveOpDone();
     }
-    return made[0] || null;
+    if (made.length && await confirm('Backup complete. Compare console saves with these backups now?', true)) {
+      for (const item of made) await verifyAgainst(session, title, item.uid, item.dir);
+    }
+    return made[0]?.dir || null;
   }
   // saves/<Game>/<user>/<timestamp> - no prompt, and every pull is kept.
   const userTag = 'user-' + uid.slice(0, 8);
-  const dir = path.join(REPO, 'saves', titles.slug(title), userTag, stamp);
+  const dir = path.join(REPO, 'saves', titles.slug(title), userTag,
+    ...(archive ? ['archive-' + archive.space + '-' + archive.type + '-' + archive.id] : []), stamp);
   console.log('pulling into ' + path.relative(REPO, dir));
-  const pullArgs = [session, title, dir, uid];
+  const pullArgs = [session, title, dir, uid, ...archiveFlags(archive)];
   echoCommand('node tools/save-pull-root.cjs ' + pullArgs.map(quote).join(' '));
   const result = run('save-pull-root.cjs', pullArgs, {stdio: 'inherit'});
   if (!result.ok) {
@@ -455,10 +436,13 @@ async function doBackup(session, title, uid) {
   }
   console.log('\nbackup: ' + dir);
   saveOpDone();
+  if (await confirm('Backup complete. Compare the console save with this backup now?', true)) {
+    await verifyAgainst(session, title, uid, dir, archive);
+  }
   return dir;
 }
 
-async function writeFiles(session, title, uid, backup, manifest) {
+async function writeFiles(session, title, uid, backup, manifest, archive = null) {
   if (!manifest || !fs.existsSync(manifest)) {
     console.log('no such manifest: ' + manifest);
     return;
@@ -466,10 +450,10 @@ async function writeFiles(session, title, uid, backup, manifest) {
   const parsed = JSON.parse(fs.readFileSync(manifest, 'utf8'));
   heading('about to write ' + parsed.files.length + ' file(s) into ' + title);
   for (const file of parsed.files) {
-    console.log(`  ${file.path}${file.replace ? '   (replace, verified)' : '   (add)'}`);
+    console.log(`  ${file.path}${file.replace ? '   (replace)' : '   (add)'}`);
   }
   if (!(await confirm('Proceed? This commits one transaction'))) return;
-  const writeArgs = [session, title, uid, backup, manifest];
+  const writeArgs = [session, title, uid, backup || '-', manifest, ...archiveFlags(archive, false)];
   echoCommand('node tools/save-write-stage.cjs ' + writeArgs.map(quote).join(' '));
   const result = run('save-write-stage.cjs', writeArgs, {stdio: 'inherit'});
   console.log(result.ok ? '\ncommitted' : '\nwrite failed - see the message above');
@@ -483,11 +467,11 @@ async function writeManifest(session, title, uid, backup) {
   await writeFiles(session, title, uid, backup, manifest);
 }
 
-async function doDelete(session, title, uid) {
+async function doDelete(session, title, uid, archive = null) {
   const target = await askDefault('File to delete at the save root (e.g. /save9999.dat)');
   if (!target) return;
   if (!(await confirm('Delete ' + target + ' from ' + title))) return;
-  const deleteArgs = [session, title, uid, target];
+  const deleteArgs = [session, title, uid, target, ...archiveFlags(archive, false)];
   echoCommand('node tools/save-delete-root.cjs ' + deleteArgs.map(quote).join(' '));
   const result = run('save-delete-root.cjs', deleteArgs, {stdio: 'inherit'});
   console.log(result.ok ? '\ndeleted' : '\ndelete failed');
@@ -541,51 +525,40 @@ async function installEditor(session, title, uid, backup) {
   }
   const manifest = path.join(REPO, 'staging', 'editor-manifest.json');
   fs.mkdirSync(path.dirname(manifest), {recursive: true});
-  const built = spawnSync('python3', [path.join(TOOLS, 'build-editor-manifest.py'), source, backup, manifest], {encoding: 'utf8'});
+  const built = spawnSync('python3', [path.join(TOOLS, 'build-editor-manifest.py'), source, backup || '-', manifest], {encoding: 'utf8'});
   console.log((built.stdout || '') + (built.stderr || ''));
   if (built.status !== 0) return;
   await writeFiles(session, title, uid, backup, manifest);
 }
 
-async function verifyAgainst(session, title, uid, backup) {
+async function verifyAgainst(session, title, uid, backup, archive = null) {
 
   // Compare against the newest backup this tool made for the same game and user.
   const root = path.join(REPO, 'saves', titles.slug(title), 'user-' + uid.slice(0, 8));
-  const staged = fs.existsSync(root)
+  const staged = backup || (!archive && fs.existsSync(root)
     ? path.join(root, fs.readdirSync(root).sort().filter(name => fs.statSync(path.join(root, name)).isDirectory()).pop() || '')
-    : '';
+    : '');
   console.log('verifying against ' + (staged || '(no backup yet)'));
   if (!staged || !fs.existsSync(staged)) {
     console.log('no such directory: ' + staged);
     return;
   }
   const temp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'verify-'));
-  const pullArgs = [session, title, temp, uid];
-  echoCommand('node tools/save-pull-root.cjs ' + pullArgs.map(quote).join(' '));
-  const pulled = run('save-pull-root.cjs', pullArgs, {stdio: 'inherit'});
-  if (!pulled.ok) {
-    console.log('\npull failed - retry, and restart the console if it keeps failing.');
-    return;
-  }
-  saveOpDone();
-  let ok = 0, bad = 0;
-  for (const name of fs.readdirSync(staged)) {
-    const local = path.join(staged, name);
-    if (!fs.statSync(local).isFile()) continue;
-    const remote = path.join(temp, name);
-    if (!fs.existsSync(remote)) { console.log('  missing in save: ' + name); bad++; continue; }
-    const same = fs.readFileSync(local).equals(fs.readFileSync(remote));
-    console.log('  ' + (same ? 'ok      ' : 'DIFFERS ') + name);
-    same ? ok++ : bad++;
-  }
-  console.log(`\nverify: ${ok} matching, ${bad} differing or missing`);
+  try {
+    const pullArgs = [session, title, temp, uid, ...archiveFlags(archive)];
+    echoCommand('node tools/save-pull-root.cjs ' + pullArgs.map(quote).join(' '));
+    const pulled = run('save-pull-root.cjs', pullArgs, {stdio: 'inherit'});
+    if (!pulled.ok) {
+      console.log('Pull failed; verification was not completed.');
+      return;
+    }
+    saveOpDone();
+    run('verify-save-manifest.cjs', [temp, path.join(staged, 'manifest.json')], {stdio: 'inherit'});
+  } finally { fs.rmSync(temp, {recursive: true, force: true}); }
+
 }
 
-async function replaceFromDirectory(session, title, uid, backup) {
-  if (!backup) {
-    console.log('Back this save up first (option 2): the write checks live bytes against it.');
-    return;
-  }
+async function replaceFromDirectory(session, title, uid, backup, archive = null) {
   const source = await askDefault('Directory holding the files to install (e.g. a save backup or /tmp/seed)');
   if (!source || !fs.existsSync(source)) {
     console.log('no such directory: ' + source);
@@ -593,13 +566,13 @@ async function replaceFromDirectory(session, title, uid, backup) {
   }
   const manifest = path.join(REPO, 'staging', path.basename(source) + '-manifest.json');
   fs.mkdirSync(path.dirname(manifest), {recursive: true});
-  echoCommand('python3 tools/build-editor-manifest.py ' + quote(source) + ' ' + quote(backup) +
+  echoCommand('python3 tools/build-editor-manifest.py ' + quote(source) + ' ' + quote(backup || '-') +
     ' ' + quote(manifest));
   const built = spawnSync('python3',
-    [path.join(TOOLS, 'build-editor-manifest.py'), source, backup, manifest], {encoding: 'utf8'});
+    [path.join(TOOLS, 'build-editor-manifest.py'), source, backup || '-', manifest], {encoding: 'utf8'});
   console.log((built.stdout || '') + (built.stderr || ''));
   if (built.status !== 0) return;
-  await writeFiles(session, title, uid, backup, manifest);
+  await writeFiles(session, title, uid, backup, manifest, archive);
 }
 
 // alula's upstream launcher. Separate from installLauncher() above on purpose:
@@ -664,10 +637,48 @@ async function resolveOne(session, title, uid) {
   return slots[0];
 }
 
-async function titleLoop(session, title, uid) {
+// Preserve the selected archive's full identity instead of probing another
+// account or falling back to a different save belonging to the same title.
+function archiveFlags(archive, read = true) {
+  if (!archive) return [];
+  return ['--space', String(archive.space), '--type', String(archive.type),
+    '--rank', String(archive.rank ?? 0), '--index', String(archive.index ?? 0),
+    ...(read ? ['--exact'] : [])];
+}
+
+async function pickArchive(session, inventoryPath) {
+  const report = JSON.parse(fs.readFileSync(inventoryPath, 'utf8'));
+  const entries = report.entries || [];
+  if (!entries.length) { console.log('No save archives listed.'); return; }
+  const types = {0: 'System', 1: 'Account', 2: 'Bcat', 3: 'Device', 4: 'Temporary', 5: 'Cache', 6: 'SystemBcat'};
+  for (;;) {
+    const picked = await choose('All save archives (blank = back)', entries.map(entry => ({
+      label: titles.label(entry.applicationId) + '  id=' + entry.id +
+        ' space=' + entry.space + ' type=' + (types[entry.type] || entry.type) +
+        ' rank=' + (entry.rank ?? 0) + ' index=' + (entry.index ?? 0) +
+        ' uid=' + entry.uid,
+      value: entry,
+    })));
+    if (closed || !picked) return;
+    const archive = picked.value;
+    if (BigInt(archive.applicationId) === 0n || [0, 6].includes(Number(archive.type))) {
+      console.log('This system archive needs a verified static save ID; this menu cannot open it yet.');
+      continue;
+    }
+    await titleLoop(session, archive.applicationId.replace(/^0x/i, '').toLowerCase(), archive.uid, archive);
+  }
+}
+
+async function titleLoop(session, title, uid, archive = null) {
   let backup = null;
   let artemis = false;
-  {
+  if (archive) {
+    const listing = run('save-pull-root.cjs',
+      [session, title, '.', uid, '--list-only', ...archiveFlags(archive)]);
+    saveOpDone();
+    if (!listing.ok) { console.log(listing.out); return; }
+    artemis = ARTEMIS_FILES.test(listing.out);
+  } else {
     // 'all' is not a uid: look for the first account that actually has a save.
     // Using slot 1 blindly hid the Artemis actions when that account was empty.
     const candidates = uid === 'all' ? accountSlots(session) : [uid];
@@ -695,7 +706,7 @@ async function titleLoop(session, title, uid) {
       {label: 'Save: back this save up                     [save op]', value: 'backup'},
       {label: 'Replace: write files from a directory        [save op]', value: 'replace'},
     ];
-    if (artemis) {
+    if (artemis && !archive) {
       items.push(
         {label: 'Install payload files (Artemis launcher)     [save op]', value: 'launcher'},
         {label: 'Install the Seedsow Lua Editor save          [save op]', value: 'editor'});
@@ -704,7 +715,7 @@ async function titleLoop(session, title, uid) {
       {label: 'Delete a file (optional)                     [save op]', value: 'delete'},
       {label: 'Verify: compare the save with what we wrote  [save op]', value: 'verify'},
       {label: 'Back to the title list', value: 'back'});
-    if (ALULA_TITLES.has(title)) {
+    if (ALULA_TITLES.has(title) && !archive) {
       // A separate installer, not a replacement for option 4: option 4 writes
       // this repository's ns2jb launcher, this writes alula's Artemis Launcher.
       // Both own save9999.dat, so they are alternatives, not a pair.
@@ -712,6 +723,7 @@ async function titleLoop(session, title, uid) {
         {label: 'Install alula Artemis Launcher               [save op]', value: 'alula'});
     }
     const task = await choose(titles.label(title) +
+      (archive ? '\n  archive id=' + archive.id + ' ' + describeArchive(archive) : '') +
       (artemis ? '\n  Artemis save detected' : '\n  no Artemis files in this save') +
       '\n  (each entry opens the save once; several in a row usually work - restart if one fails)', items);
     if (closed || !task || task.value === 'back') return;
@@ -721,7 +733,7 @@ async function titleLoop(session, title, uid) {
       uid = resolved;
     }
     if (task.value === 'list') {
-      const listArgs = [session, title, '.', uid, '--list-only'];
+      const listArgs = [session, title, '.', uid, '--list-only', ...archiveFlags(archive)];
       echoCommand('node tools/save-pull-root.cjs ' + listArgs.map(quote).join(' '));
       const listed = run('save-pull-root.cjs', listArgs, {stdio: 'inherit'});
       if (!listed.ok) {
@@ -730,10 +742,10 @@ async function titleLoop(session, title, uid) {
         saveOpDone();
       }
     } else if (task.value === 'backup') {
-      const dir = await doBackup(session, title, uid);
+      const dir = await doBackup(session, title, uid, archive);
       if (dir) backup = dir;
     } else if (task.value === 'replace') {
-      await replaceFromDirectory(session, title, uid, backup);
+      await replaceFromDirectory(session, title, uid, backup, archive);
     } else if (task.value === 'launcher') {
       await installLauncher(session, title, uid, backup);
     } else if (task.value === 'alula') {
@@ -741,9 +753,9 @@ async function titleLoop(session, title, uid) {
     } else if (task.value === 'editor') {
       await installEditor(session, title, uid, backup);
     } else if (task.value === 'delete') {
-      await doDelete(session, title, uid);
+      await doDelete(session, title, uid, archive);
     } else if (task.value === 'verify') {
-      await verifyAgainst(session, title, uid, backup);
+      await verifyAgainst(session, title, uid, backup, archive);
     }
   }
 }
@@ -825,15 +837,25 @@ async function main() {
   let session = explicit ? path.resolve(explicit) : await pickSession();
   if (!session) return;
   console.log('session: ' + session + '\n');
+  if (!fs.existsSync(path.join(session, 'switch2/ro/root/current-root.json'))) {
+    if (!fs.existsSync(path.join(session, 'connection.json')) &&
+        !fs.existsSync(path.join(session, 'switch2/current-acquisition.json'))) {
+      console.log('Run found, but only connect.txt is present: no completed connection has been recorded yet.');
+      console.log('ns2jb creates this folder before waiting for the console. Check the ns2jb terminal and finish the connection/bootstrap.');
+    } else {
+      console.log('Run found, but promoted fsp-srv root is not ready. An RPC connection alone is insufficient for save operations.');
+    }
+    console.log('Check this run’s run.log and switch2/pipeline.json; retry after root promotion completes.');
+    rl.close();
+    return;
+  }
 
   for (;;) {
     const rows = await titleRows(session);
     if (rows.length === 0) {
-      console.log('no titles listed - is the session still live?');
-      console.log('check with: node rpc.cjs ' + session + ' status');
-      break;
+      console.log('No installed titles listed; all save archives remain available with a.');
     }
-    heading(rows.length + ' installed applications  (✔ = write-allowed)');
+    heading(rows.length + ' installed applications  (all writes require confirmation)');
     rows.forEach((row, index) => console.log('  [' + (index + 1) + '] ' + row.label));
     const picked = await ask('\nNumber 1-' + rows.length +
       '  (i = installed inventory, a = all save archives, p = pull next batch (5), blank = quit): ');
@@ -851,7 +873,8 @@ async function main() {
       // the card is out, and no titledb is needed.
       const at = path.join(REPO, 'saves', 'inventory.json');
       echoCommand('node tools/save-inventory.cjs ' + quote(session) + ' --names --json ' + quote(at));
-      run('save-inventory.cjs', [session, '--names', '--json', at], {stdio: 'inherit'});
+      const inventory = run('save-inventory.cjs', [session, '--names', '--json', at], {stdio: 'inherit'});
+      if (inventory.ok) await pickArchive(session, at);
       continue;
     }
     if (picked.toLowerCase() === 'p') {

@@ -62,8 +62,8 @@ author's copies; ours are the game's current files and are left alone.
 - a **patched** `ns2jb` checkout, a live RPC session and its run folder
   (`switch2/ro/root/current-root.json` present), as for every other write;
 - the target demo installed and launched once, so its save archive exists;
-- the title on the write allowlist (`config/titles.local.json` is local and
-  gitignored; the public list stays empty);
+- interactive confirmation at the staged writer before any console write;
+  the launcher still supports only its listed demo titles;
 - the account uid, either passed with `--uid` or present in the local
   `config/uids.json`;
 - a **complete, identity-bearing backup** for install/verify/restore. A backup
