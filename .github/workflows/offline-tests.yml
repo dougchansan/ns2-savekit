@@ -3,7 +3,7 @@ name: offline tests
 on:
   pull_request:
   push:
-    branches: [main, 'feature/**']
+    branches: [main, local-modifications, 'feature/**']
 
 jobs:
   tests:
