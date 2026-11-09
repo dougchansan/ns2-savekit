@@ -28,6 +28,8 @@ const entries = [
   {id: '10', applicationId: '0x' + title, uid: '0'.repeat(32), space: 1, type: 3, rank: 0, index: 0},
   {id: '11', applicationId: '0x' + title, uid, space: 4, type: 5, rank: 1, index: 7},
   {id: '12', applicationId: '0x0000000000000000', uid: '0'.repeat(32), space: 0, type: 0},
+  {id: '13', applicationId: '0x0100cd801ce5e000', uid, space: 1, type: 1, rank: 0, index: 0},
+  {id: '14', applicationId: '0x0100cd801ce5e000', uid, space: 4, type: 5, rank: 1, index: 7},
 ];
 write('config/titledb-cache.json', JSON.stringify({[title]: 'Uninstalled Game'}));
 const log = path.join(tmp, 'calls.jsonl');
@@ -118,6 +120,14 @@ try {
   // A failed refresh must never offer the stale JSON from a previous run.
   r = kit('a\n\n', {INVENTORY_FAIL: '1'});
   assert.doesNotMatch(r.out, /All save archives \(blank/);
+  count++;
+  r = kit('a\n4\n\n\n\n');
+  assert.match(r.out, /Install Balatro Lua launcher/);
+  assert.match(r.out, /Verify Balatro Lua launcher/);
+  assert.match(r.out, /Restore Balatro gameplay/);
+  count++;
+  r = kit('a\n5\n\n\n\n');
+  assert.doesNotMatch(r.out, /Install Balatro Lua launcher/);
   count++;
   console.log(count + ' kit session/archive checks passed');
 } finally {fs.rmSync(tmp, {recursive: true, force: true});}

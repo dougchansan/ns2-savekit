@@ -11,6 +11,10 @@ retargeted so the game resumes *our* Lua instead of its own script. that is the 
 launch" half (`payloads/`, `tools/artemis-save.py`); the save half works on any
 title you own.
 
+the kit also installs external launchers from pinned releases, including
+[Balatro's Lua launcher](docs/BALATRO-LAUNCHER.md) for the Switch 1 edition on a
+Switch 2. its payload files are downloaded and verified at install time.
+
 the exploit is **not** here. nothing in this repo is exploit code, keys, or game
 content.
 
@@ -80,6 +84,7 @@ scripts and prints the exact command before each one.
 | pull batch (p) | pull the next pending archives from that inventory (default 5) |
 | launcher / editor | Artemis only: install the payload set or the Seedsow Lua Editor save |
 | alula launcher | Artemis demo only: install alula's upstream Artemis Launcher against an immutable original baseline, verify it, or roll it back safely (the menu number moves with the title's other entries; read the label) |
+| Balatro launcher | Switch 1 edition only: install the pinned Lua launcher, verify its files, or restore gameplay with the installation receipt |
 | Artemis HTTP (`--http`) | no ns2jb session: health, Lua, stat, download, upload, delete and explicit-file backup over the launcher's port 8080 |
 
 ns2jb writes use one commit and read back every written file to verify its hash.
@@ -201,6 +206,37 @@ node tools/artemis-launcher.cjs restore <run> --title 010042d022aea000 --uid <ui
   the backup/restore evidence and the known limits - including that the
   minus-at-startup update bypass was **not** observed on demo 1.0.0.
 
+### Balatro Lua launcher
+
+[Luminger/balatro-switch-rce](https://github.com/Luminger/balatro-switch-rce)
+replaces Balatro's startup with a status console, Lua RPC and FTP. The kit's
+**Install Balatro Lua launcher**, **Verify Balatro Lua launcher**, and
+**Restore Balatro gameplay** entries appear only for the Switch 1 title
+`0100cd801ce5e000`, including that edition running on Switch 2 in compatibility
+mode. The native Switch 2 edition is unsupported.
+
+```sh
+node tools/balatro-launcher.cjs plan --backup <complete-pull> --uid <uid>
+node tools/balatro-launcher.cjs install <run> --uid <uid> --confirm
+node tools/balatro-launcher.cjs verify <run> --uid <uid> --receipt <receipt.json>
+node tools/balatro-launcher.cjs restore <run> --uid <uid> \
+  --receipt <receipt.json> --confirm-restore
+```
+
+- pins upstream `v1.1.0` by archive and per-file SHA-256; adds 20 launcher files
+  under `/.lovegame/` and excludes the ZIP's JKSV metadata;
+- takes a fresh live backup, preserves gameplay files and records an immutable
+  original baseline and receipt before writing; existing launcher paths are
+  refused;
+- rollback takes another backup and removes only receipt-owned launcher files,
+  preserving profiles, settings, logs and unrelated files;
+- upstream documents Switch 1 builds `1.0.1f` and `1.0.1o`; its hardware report
+  covers its JKSV/save-transfer route. **This direct SaveKit installation and
+  rollback still need a hardware smoke test.**
+
+See [docs/BALATRO-LAUNCHER.md](docs/BALATRO-LAUNCHER.md) for offline staging and
+dry runs, compatibility, receipt recovery, and the unauthenticated RPC/FTP ports.
+
 ## Artemis HTTP transport (no ns2jb)
 
 The installed Artemis Launcher serves `/status`, `/eval`, `/save` and `/delete`
@@ -299,6 +335,20 @@ Times below use UTC+08:00 (Asia/Taipei) and record when changes were committed
 in this fork. The base is
 [dougchansan/ns2-savekit](https://github.com/dougchansan/ns2-savekit) at `700814f`.
 
+### 2026-11-09 15:34 — Balatro launcher and upstream synchronization
+
+- Merge upstream `9d8ba7f`, including the pinned Balatro Switch 1 Lua launcher
+  with plan, stage, install, verify and receipt-based rollback commands.
+- Add the three Balatro actions to the title menu for the supported primary
+  account archive; preserve existing archive-specific actions and confirmation.
+- Pull the exact account archive for installation backups and verification.
+- Require interactive confirmation for receipt-owned launcher removal, including
+  direct CLI use; keep the original gameplay backup and third-party notices.
+- Add dated, bulleted update sections to both repository READMEs.
+- Resolve the system temporary directory in Balatro tests so macOS `/var`
+  symlinks do not cause false failures.
+- Direct SaveKit installation and rollback still require hardware validation.
+
 ### 2026-11-09 15:25 — upstream fixes and documentation
 
 - Port large-file hash verification from upstream `123edd8`: read back in
@@ -310,9 +360,8 @@ in this fork. The base is
 - Add regression tests for changed/identical replacements, stale backups,
   corrupt or missing read-backs, bounded reads and manifest integrity.
 - Reduce personal attribution to one credits entry and use functional headings.
-- Keep the optional upstream Balatro launcher out of this selective port. The
-  `0b28b4f` replacement-verification fix is covered by the shared staged writer,
-  which compares committed targets with their replacement bytes.
+- Retain the shared staged writer, which already compares committed targets
+  with their replacement bytes, covering upstream `0b28b4f`.
 
 ### 2026-11-09 15:14–15:15 — initial integration
 
