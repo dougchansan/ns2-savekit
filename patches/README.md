@@ -51,7 +51,7 @@ this toolkit was developed and tested against. So the hardware evidence in
 [docs/RESULTS.md](../docs/RESULTS.md) - four committed writes, all read back and
 hashed, plus the 275-file editor install - applies to a patched checkout exactly.
 
-## Additional patches in ZW Cai's fork
+## Additional host patches
 
 After the existing `.diff` patches, apply these two patches before a fresh run:
 

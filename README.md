@@ -1,32 +1,5 @@
 # ns2-savekit
 
-## ZW Cai's fork
-
-Maintained by ZW Cai ([@x43x61x69](https://github.com/x43x61x69)). Based on
-[dougchansan/ns2-savekit](https://github.com/dougchansan/ns2-savekit) at
-`700814f`; upstream authors retain credit for the original toolkit. The
-`local-modifications` branch preserves this local version; upstream `main`
-remains available separately. The companion patched host is
-[x43x61x69/ns2jb](https://github.com/x43x61x69/ns2jb).
-
-This fork adds run discovery across workspace ancestors and `NS2_RUNS`,
-default selection of the newest run, archive-specific file actions and batch
-pulls, optional backup comparison, and recursive replacement manifests.
-Writes and deletes accept any title after interactive confirmation of the
-archive, account and paths; missing backups and changed live bytes need their
-own confirmation. Shared path validation rejects traversal and invalid paths.
-The legacy title write allowlist is replaced by title-name hints.
-
-It also includes cleanup-gated acquisition retries and tests against the
-companion host. Native-worker timeout diagnostics identify the worker and
-preserve the planned calls; they do not prove which call was executing or fix
-the native hang. Acquisition remains unresolved on the latest observed run:
-cleanup was unproven, so the supervisor correctly stopped after one attempt.
-Offline tests do not establish hardware reliability.
-
-Local changes, integration and validation credit: **ZW Cai (@x43x61x69)**.
-Original toolkit: **dougchansan**; third-party credit remains in [NOTICE](NOTICE).
-
 read, back up, restore and modify save data for **any Switch 2 title**, whether
 it is installed, on a card, or has no card inserted, over a live
 [ns2jb](https://gitlab.com/kurumuz/ns2jb) session. the save path is
@@ -54,8 +27,7 @@ lua tests/test_metadata_lua.lua
 sh tests/test_inject_dryrun.sh
 ```
 
-Validated locally: 28 Node test entries, 8 Python tests, and the Lua suites
-passed. Real-sample Lua cases and the shell dry run skip when their optional
+Validated locally: the Node, Python and Lua suites passed. Real-sample Lua cases and the shell dry run skip when their optional
 local fixtures are absent. CI pins the companion engine to commit
 `206a4f01826154eea00f1664f10819e0e7e856e5` for reproducibility.
 
@@ -321,7 +293,30 @@ the controller/esp32 work lives in
 [ns2-console](https://github.com/dougchansan/ns2-console); the content/asset
 pipeline is in [ns2-assets](https://github.com/dougchansan/ns2-assets).
 
+## fork changes
+
+Based on [dougchansan/ns2-savekit](https://github.com/dougchansan/ns2-savekit)
+at `700814f`, with run discovery, archive-specific file actions, recursive
+replacement manifests, and interactive write/delete confirmation. The companion
+[patched host](https://github.com/x43x61x69/ns2jb) includes cleanup-gated
+acquisition retries and worker timeout diagnostics. The native acquisition hang
+remains unresolved; diagnostics do not establish hardware reliability.
+
+Selected fixes from upstream `9d8ba7f` are integrated:
+
+- `123edd8`: bounded reads for large-file hash verification, shared by both
+  staged writes and the single-file wrapper.
+- `975a59b`: check optional manifest size/SHA-256 before opening a console
+  session, and recognize only canonical path-not-found replies as absent files.
+
+The single-file verification fix in `0b28b4f` is already covered by this fork's
+shared staged writer, which compares committed targets with replacement bytes.
+The optional Balatro launcher is not included. This is a selective port, not a
+full merge of upstream main; the original commits remain available there.
+
 ## credits and licence
+
+Additional maintenance: [@x43x61x69](https://github.com/x43x61x69).
 
 our code is MIT (see [LICENSE](LICENSE)). third-party components and links are
 listed in [NOTICE](NOTICE): ns2jb (the exploit, linked not vendored), Seedsow Lua

@@ -9,6 +9,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const net = require('node:net');
+const {hashFile} = require('./lib/verified-file-hash.cjs');
 const {build: saveAttribute} = require('./lib/save-attr.cjs');
 const {allowRisk, validateSavePath, confirmWrite} = require('./lib/write-policy.cjs');
 
@@ -82,6 +83,12 @@ async function main() {
   const jobs = [];
   for (const entry of manifest.files) {
     const bytes = await fs.readFile(entry.local);
+    if (entry.size !== undefined)
+      check(Number.isSafeInteger(entry.size) && bytes.length === entry.size,
+        'Staged file size differs from the manifest: ' + entry.path);
+    if (entry.sha256 !== undefined)
+      check(typeof entry.sha256 === 'string' && /^[0-9a-f]{64}$/.test(entry.sha256) && sha(bytes) === entry.sha256,
+        'Staged file hash differs from the manifest: ' + entry.path);
     validateSavePath(entry.path);
     const rel = entry.path.slice(1);
     jobs.push({name: rel, path: entry.path, bytes, replace: entry.replace === true,
@@ -174,8 +181,8 @@ async function main() {
       const opened = await filesystem.openFile(s, save, job.path);
       const present = !opened.result;
       if (!present) {
-        check(Number(opened.canonicalResult) === 0x202,
-          'Cannot inspect ' + job.path + ': ' + code(opened.result));
+        check((Number(opened.canonicalResult ?? opened.result) & 0x3fffff) === 0x202,
+          'Cannot establish whether ' + job.path + ' exists: ' + code(opened.result));
         await allowRisk(!job.replace, 'Replacement target is absent: ' + job.path);
         continue;
       }
@@ -184,17 +191,17 @@ async function main() {
       check(!opened.result, 'Cannot open ' + job.path + ' to compare it');
       try {
         const size = Number(await filesystem.fileSize(s, opened.handle));
-        const live = await filesystem.readFile(s, opened.handle, 0, size);
+        const liveHash = await hashFile(s, filesystem, opened.handle, size);
         await allowRisk(job.replace, 'Overwrite existing save file ' + job.path);
         const backup = job.local ? await fs.readFile(job.local).catch(error => {
           if (error.code === 'ENOENT') return null;
           throw error;
         }) : null;
         if (!restore && backup) {
-          await allowRisk(sha(live) === sha(backup), 'Live ' + job.path + ' differs from the backup');
+          await allowRisk(liveHash === sha(backup), 'Live ' + job.path + ' differs from the backup');
         }
         console.log((restore ? 'restore: ' : 'replace: ') + job.path + ' ' +
-          live.length + 'B -> ' + job.bytes.length + 'B');
+          size + 'B -> ' + job.bytes.length + 'B');
       } finally {
         await s.close(opened.handle).catch(() => {});
       }
@@ -234,10 +241,13 @@ async function main() {
     for (const job of jobs) {
       const opened = await filesystem.openFile(s, save, job.path);
       check(!opened.result, 'Verify could not open ' + job.path + ': ' + code(opened.result));
-      const size = Number(await filesystem.fileSize(s, opened.handle));
-      const bytes = await filesystem.readFile(s, opened.handle, 0, size);
-      await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
-      const got = sha(bytes);
+      let size, got;
+      try {
+        size = Number(await filesystem.fileSize(s, opened.handle));
+        got = await hashFile(s, filesystem, opened.handle, size);
+      } finally {
+        await s.close(opened.handle).catch(() => s.handles.delete(opened.handle));
+      }
       const ok = got === sha(job.bytes) && size === job.bytes.length;
       if (!ok) mismatches++;
       console.log('  ' + job.path.padEnd(30) + String(size).padStart(8) + '  ' +

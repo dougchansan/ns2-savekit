@@ -73,7 +73,7 @@ node tools/accounts.cjs  <run>   # ListAllUsers 0x0, then the uids
 The hardware evidence in [RESULTS.md](RESULTS.md) was produced on a checkout with
 the full set applied.
 
-## Additional patches in ZW Cai's fork
+## Additional host patches
 
 After the existing `.diff` patches, apply these two patches before a fresh run:
 
